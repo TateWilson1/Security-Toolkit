@@ -1,10 +1,17 @@
 <Sysmon schemaversion="4.90">
   <HashAlgorithms>SHA256</HashAlgorithms>
   <EventFiltering>
-    <!-- Log all process creations, network connections and exits for CCDC visibility. -->
-    <!-- High-volume on domain controllers. Keep event logs sufficiently large. -->
+    <!-- Broad process/network history: size logs and measure busy DC overhead in a lab. -->
     <ProcessCreate onmatch="exclude" />
     <NetworkConnect onmatch="exclude" />
     <ProcessTerminate onmatch="exclude" />
+    <RuleGroup name="Common persistence registry locations" groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <TargetObject condition="contains">\Software\Microsoft\Windows\CurrentVersion\Run</TargetObject>
+        <TargetObject condition="contains">\SYSTEM\CurrentControlSet\Services\</TargetObject>
+        <TargetObject condition="contains">\Software\Microsoft\Windows NT\CurrentVersion\Winlogon\</TargetObject>
+      </RegistryEvent>
+    </RuleGroup>
+    <WmiEvent onmatch="exclude" />
   </EventFiltering>
 </Sysmon>

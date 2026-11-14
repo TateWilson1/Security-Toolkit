@@ -26,6 +26,15 @@ Assert ($r.Severity -eq 'INFO' -and $r.Data.MessageTotal -eq '2') 'Benign script
 $profile.KnownManagementAddresses=@('192.0.2.1')
 $r=ConvertTo-CcdcEvent (New-Xml 4624 'Security' 6 @{TargetUserName='scorer';LogonType='3';IpAddress='192.0.2.1'}) $profile
 Assert ($r.Severity -eq 'INFO') 'Known management authentication should remain informational'
+$systemXml=(New-Xml 7045 'System' 7 @{ServiceName='lab-service';ImagePath='C:\Lab\service.exe'}).Replace('<EventID>7045</EventID>','<EventID Qualifiers="16384">7045</EventID>')
+$r=ConvertTo-CcdcEvent $systemXml $profile
+Assert ($r.EventId -eq 7045 -and $r.Kind -eq 'PERSISTENCE') 'Qualified System event ID parsing failed'
+$emptyXml=New-Xml 4104 'Microsoft-Windows-PowerShell/Operational' 8 @{ScriptBlockText='';Path='';ScriptBlockId='{test}'}
+$r=ConvertTo-CcdcEvent $emptyXml $profile
+Assert ($r.Data.Path -eq '' -and $r.Kind -eq 'POWERSHELL') 'Empty EventData fields must not poison a channel batch'
+$clearXml='<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><EventID>1102</EventID><TimeCreated SystemTime="2026-11-14T18:00:01Z"/><EventRecordID>9</EventRecordID><Channel>Security</Channel><Computer>LAB</Computer></System><UserData><LogFileCleared xmlns="http://manifests.microsoft.com/win/2004/08/windows/eventlog"><SubjectUserName>lab-admin</SubjectUserName></LogFileCleared></UserData></Event>'
+$r=ConvertTo-CcdcEvent $clearXml $profile
+Assert ($r.Data.SubjectUserName -eq 'lab-admin' -and $r.Severity -eq 'REVIEW') 'UserData-only records must not poison a channel batch'
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('ccdc-tests-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $temp
 try {

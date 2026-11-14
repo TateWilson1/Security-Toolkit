@@ -115,6 +115,7 @@ switch ($Mode) {
         } $folder
         try {
             & netsh.exe advfirewall export (Join-Path $folder 'firewall-before-changes.wfw') | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "netsh firewall export failed, exit $LASTEXITCODE" }
             Write-Host 'Exported firewall policy for recovery.' -ForegroundColor Green
         } catch { Write-Warning "Firewall policy export failed: $_" }
         if ($Role -eq 'AD') {
@@ -241,7 +242,11 @@ Retest result from scoring portal:
         }
         $telemetry=Join-Path $OutputDir 'Telemetry'
         if (Test-Path $telemetry) {
-            Copy-Item -LiteralPath $telemetry -Destination (Join-Path $folder 'Telemetry') -Recurse -Force
+            $snapshot=Join-Path $folder 'Telemetry';$null=New-Item -ItemType Directory -Path $snapshot
+            # Never copy the live lock handle or a partially-written checkpoint temp file.
+            foreach($file in Get-ChildItem -LiteralPath $telemetry -File | Where-Object {$_.Extension -in @('.jsonl','.json')}) {
+                Copy-Item -LiteralPath $file.FullName -Destination $snapshot -Force
+            }
         }
         $results | ConvertTo-Json | Set-Content (Join-Path $folder 'export-status.json') -Encoding UTF8
         Get-ChildItem $folder -Recurse -File | Where-Object {$_.Name -ne 'SHA256.csv'} |

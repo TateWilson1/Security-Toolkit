@@ -25,8 +25,14 @@ function ConvertTo-CcdcEvent {
     [xml]$x = $Xml
     $s = $x.Event.System
     $d = @{}
-    foreach ($node in @($x.Event.EventData.Data)) {
-        if ($node -and $node.Name) { $d[[string]$node.Name] = [string]$node.'#text' }
+    # Read DOM text directly: empty <Data/> has no '#text' property, and events
+    # such as Security 1102 use UserData rather than EventData.
+    foreach ($node in $x.DocumentElement.SelectNodes("*[local-name()='EventData']/*[local-name()='Data']")) {
+        $name=$node.GetAttribute('Name')
+        if ($name) { $d[$name]=$node.InnerText }
+    }
+    foreach ($node in $x.DocumentElement.SelectNodes("*[local-name()='UserData']//*[not(*)]")) {
+        $d[$node.LocalName]=$node.InnerText
     }
     $id = if ($s.EventID -is [System.Xml.XmlElement]) { [int]$s.EventID.InnerText } else { [int]$s.EventID }
     $channel = [string]$s.Channel
@@ -53,6 +59,8 @@ function ConvertTo-CcdcEvent {
         SourceIp=[string]$(if ($d['SourceIp']) {$d['SourceIp']} else {$d['IpAddress']})
         SourcePort=[string]$d['SourcePort']; DestinationIp=[string]$d['DestinationIp']
         DestinationPort=[string]$d['DestinationPort']; Protocol=[string]$d['Protocol']
+        ExecutionProcessId=$(if($s.SelectSingleNode("*[local-name()='Execution']")){$s.SelectSingleNode("*[local-name()='Execution']").GetAttribute('ProcessID')}else{''})
+        UserSid=$(if($s.SelectSingleNode("*[local-name()='Security']")){$s.SelectSingleNode("*[local-name()='Security']").GetAttribute('UserID')}else{''})
         Data=$d
     }
     $reasons = New-Object 'System.Collections.Generic.List[string]'

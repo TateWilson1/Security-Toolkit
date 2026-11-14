@@ -1,11 +1,11 @@
 {
-  "CCDC-BlueTeam.ps1": "bf80c437f85054b15e57f8a6c15b5bfa40b04fc073328a8258d76e730b5b8b2f",
-  "Dashboard.ps1": "5e972c0d746c5aab3b5c8f901410c95fedb4cddbbefc44ab9255060cb43a046e",
-  "Monitoring.psm1": "83a2470dfba8d6c686d1338473a838e34a5961ed0a18a879090658f6230a67bb",
-  "ccdc-sysmon.xml": "92e8b2f35b840353bac42b2d7f57792ccfbb6d57d8d78c867064aa5b640ea841",
+  "CCDC-BlueTeam.ps1": "668f1cf884ed0ab896bf9f1a2da4e9fb62ea431f890cd9c55164c0b56eb3f941",
+  "Dashboard.ps1": "0e08da0bddb4af3b9aaec42684e143dff30a62ced6f190ae7e51d14f65a00b20",
+  "Monitoring.psm1": "ba956210f164bbc2e84036d6189066902e001f295e7ab55e0f708bdf0bceed21",
+  "ccdc-sysmon.xml": "ca51512359d824eb271180bf823679dd4149574dd4cf91dd8a5c7bf7e1eebdd1",
   "profile.default.json": "5a24fd6c43fc97c3c0696a91aa2d0e7f3c68af4e97f804811d027ebbac4f9a31",
   "README.md": "2a87a7aedff4d429a880b17829c706974b6e1fd61c6ab45696b33db10752adfd",
   "CCDC-Playbook.md": "b50c1f89ce672d27cb16d2953c79b86b509464a7bd4c7d4465e1901e7787fa38",
-  "Install.ps1": "e83a7cfc28b33e89addc93efcac29d4da76507501b67961b586dc3fc164b69df",
+  "Install.ps1": "0a9c3103668746790ada35a1507bb070676753a30b6d459b6b5e5e62a190941e",
   "TESTING.md": "a8b4adca44ccae2eec08dfb86eb9343fda9b81d54dd1a41a3ebfe4c89e22c846"
 }

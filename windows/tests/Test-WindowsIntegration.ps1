@@ -15,6 +15,17 @@ $root=Join-Path $env:ProgramData 'CCDC-BlueTeam'
 $start=[datetime]::UtcNow
 $marker='CCDC-LAB-'+[guid]::NewGuid().ToString('N')
 try {
+    Test-Step 'GUI with missing Sysmon (before installation)' {
+        if(@(Get-Service Sysmon,Sysmon64 -ErrorAction SilentlyContinue).Count){throw 'Preinstalled Sysmon: missing-source test requires a fresh lab'}
+        $report=Join-Path $ResultsDirectory 'missing-sysmon-gui.json'
+        $gui=Join-Path $PSScriptRoot '..\Dashboard.ps1'
+        $scratch=Join-Path $ResultsDirectory 'missing-source-telemetry'
+        $process=Start-Process powershell.exe -ArgumentList ('-NoProfile -STA -ExecutionPolicy Bypass -File "'+$gui+'" -DataDirectory "'+$scratch+'" -SmokeTestReport "'+$report+'"') -PassThru -RedirectStandardError (Join-Path $ResultsDirectory 'missing-sysmon-errors.txt')
+        if(-not $process.WaitForExit(60000)){Stop-Process -Id $process.Id;throw 'Missing-source GUI timed out'}
+        if(-not(Test-Path $report)){throw 'Missing-source GUI produced no report'}
+        $state=Get-Content $report -Raw | ConvertFrom-Json
+        if(-not @($state.Health | Where-Object {$_ -match 'Sysmon.*UNAVAILABLE/ERROR'}).Count){throw 'Missing Sysmon not reported'}
+    }
     Test-Step 'Clean installation' {
         if(Test-Path $root){throw 'Not a clean lab: installation directory already exists. Refusing to remove it.'}
         & (Join-Path $PSScriptRoot '..\Install.ps1') -Revision $Revision -NoLaunch
@@ -45,6 +56,8 @@ try {
         $children=@($labEvents | Where-Object {$_.Image -like '*\cmd.exe' -and $_.CommandLine -like "*$marker*"})
         if(-not $children.Count){throw 'Short-lived CMD missing'}
         if(-not @($children | Where-Object ParentProcessGuid).Count){throw 'Ancestry missing'}
+        $parents=@($labEvents | Where-Object {$_.Image -like '*\powershell.exe' -and $_.CommandLine -like "*$marker*"})
+        if(-not @($children | Where-Object {$_.ParentProcessGuid -in $parents.ProcessGuid}).Count){throw 'CMD was not linked to the recorded PowerShell parent GUID'}
         if(-not @($labEvents | Where-Object {$_.CommandLine -like "*$marker*" -and $_.Severity -eq 'REVIEW'}).Count){throw 'Alert missing'}
         foreach($r in $children){if([datetimeoffset]::Parse($r.Time).UtcDateTime -lt $start){throw 'Timestamp predates test'}}
     }
@@ -84,6 +97,7 @@ try {
         if(-not (Test-Path $report)){throw 'GUI produced no report; inspect gui-errors.txt'}
         $gui=Get-Content $report -Raw | ConvertFrom-Json
         if($gui.Batches -lt 1 -or $gui.Events -lt 1){throw 'GUI did not collect/replay events'}
+        if(@($gui.Health | Where-Object {$_ -match 'ERROR|UNAVAILABLE'}).Count){throw ('GUI source failures: '+($gui.Health -join '; '))}
     }
     Test-Step 'Evidence EVTX and hashes' {
         & (Join-Path $installed 'CCDC-BlueTeam.ps1') -Mode Export -OutputDir $evidence

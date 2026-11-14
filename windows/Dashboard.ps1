@@ -79,10 +79,11 @@ $script:counters=New-Object System.Windows.Forms.Label
 $script:counters.Text='Events 0   |   Alerts 0';$script:counters.ForeColor=$fg
 $script:counters.Location=[System.Drawing.Point]::new(864,17);$script:counters.Size=[System.Drawing.Size]::new(380,27)
 $script:counters.Font=[System.Drawing.Font]::new('Segoe UI',11,[System.Drawing.FontStyle]::Bold)
-$tools.Controls.Add($script:counters)
+$script:counters.Dock='Right';$script:counters.Width=310;$script:counters.TextAlign='MiddleRight'
+$top.Controls.Add($script:counters)
 $tabs=New-Object System.Windows.Forms.TabControl
 $tabs.Dock='Fill';$tabs.Font=[System.Drawing.Font]::new('Segoe UI',10)
-$form.Controls.Add($tabs);$tabs.BringToFront()
+$form.Controls.Add($tabs);$tabs.BringToFront();$form.Controls.SetChildIndex($top,2)
 function New-Tab([string]$label) {
     $t=New-Object System.Windows.Forms.TabPage;$t.Text=$label;$t.BackColor=$bg
     [void]$tabs.TabPages.Add($t)
@@ -148,6 +149,7 @@ $script:eventGrid.Columns['From'].FillWeight=105
 $script:eventGrid.Columns['To'].FillWeight=105
 $script:eventGrid.Columns['Who'].FillWeight=110
 $split.Panel1.Controls.Add($script:eventGrid)
+$script:rendering=$false
 $script:detail=New-Object System.Windows.Forms.TextBox
 $script:detail.Dock='Fill';$script:detail.Multiline=$true;$script:detail.ReadOnly=$true
 $script:detail.WordWrap=$false;$script:detail.ScrollBars='Both'
@@ -156,8 +158,8 @@ $script:detail.Font=[System.Drawing.Font]::new('Consolas',9)
 $script:detail.Text='Select a timeline event for FULL command line, parent, event record ID, and timestamps.'
 $split.Panel2.Controls.Add($script:detail)
 $script:eventGrid.Add_SelectionChanged({
-    if($script:eventGrid.SelectedRows.Count -gt 0 -and $script:eventGrid.SelectedRows[0].Tag){
-        $script:detail.Text=[string]$script:eventGrid.SelectedRows[0].Tag
+    if(-not $script:rendering -and $script:eventGrid.SelectedRows.Count -gt 0 -and $script:eventGrid.SelectedRows[0].Tag){
+        $script:detail.Text=ConvertTo-Json -InputObject $script:eventGrid.SelectedRows[0].Tag -Depth 8
     }
 })
 $script:tcp=New-Object System.Windows.Forms.DataGridView
@@ -219,22 +221,33 @@ $tNotes.Controls.Add($instructions)
 # Search operates on the most recent 1200 retained rows, including replay at startup.
 $search=New-Object System.Windows.Forms.TextBox
 $search.Dock='Top';$search.BackColor=$surface;$search.ForeColor=$fg
-$tEvent.Controls.Add($search);$search.BringToFront()
+$filterPanel=New-Object System.Windows.Forms.Panel
+$filterPanel.Dock='Top';$filterPanel.Height=28
+$filterLabel=New-Object System.Windows.Forms.Label
+$filterLabel.Text='Filter recent events:';$filterLabel.Dock='Left';$filterLabel.Width=160;$filterLabel.ForeColor=$fg
+$search.Dock='Fill';$filterPanel.Controls.Add($search);$filterPanel.Controls.Add($filterLabel)
+$tEvent.Controls.Add($filterPanel)
 $search.AccessibleName='Search recent events by command, address, user or process'
 $script:recent=New-Object 'System.Collections.Generic.List[object]'
 $script:seen=New-Object 'System.Collections.Generic.HashSet[string]'
 function Show-Recent {
+    $selectedKey=''
+    if($script:eventGrid.CurrentRow -and $script:eventGrid.CurrentRow.Tag){$selectedKey=$script:eventGrid.CurrentRow.Tag.Key}
+    $script:rendering=$true
+    try {
     $script:eventGrid.Rows.Clear()
+    $selectedIndex=-1
     $needle=$search.Text
-    foreach ($r in $script:recent) {
+    foreach ($r in ($script:recent | Sort-Object Time,Channel,RecordId)) {
         if ($script:onlyAlerts -and $r.Severity -eq 'INFO') { continue }
         $details=ConvertTo-Json -InputObject $r -Depth 8
         if ($needle -and $details.IndexOf($needle,[StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
         $index=$script:eventGrid.Rows.Add([object[]]@(
             ([datetimeoffset]::Parse($r.Time).ToLocalTime().ToString('MM-dd HH:mm:ss')),
             $r.Severity,$r.Kind,($r.Image -split '\\')[-1],($r.ParentImage -split '\\')[-1],
-            ('['+$r.SourceIp+']:'+$r.SourcePort),('['+$r.DestinationIp+']:'+$r.DestinationPort),$r.User))
-        $row=$script:eventGrid.Rows[$index];$row.Tag=$details
+            $(if($r.SourceIp){'['+$r.SourceIp+']:'+$r.SourcePort}else{''}),$(if($r.DestinationIp){'['+$r.DestinationIp+']:'+$r.DestinationPort}else{''}),$r.User))
+        $row=$script:eventGrid.Rows[$index];$row.Tag=$r
+        if($r.Key -eq $selectedKey){$selectedIndex=$index}
         if ($r.Severity -eq 'HIGH') { $row.DefaultCellStyle.ForeColor=$red }
         elseif ($r.Severity -eq 'REVIEW') { $row.DefaultCellStyle.ForeColor=$amber }
     }
@@ -255,6 +268,9 @@ function Show-Recent {
         } else { $node.Text+=' (parent outside retained view or unavailable)';[void]$tree.Nodes.Add($node) }
     }
     $tree.EndUpdate()
+    $script:eventGrid.ClearSelection()
+    if($selectedIndex -ge 0){$script:eventGrid.CurrentCell=$script:eventGrid.Rows[$selectedIndex].Cells[0];$script:eventGrid.Rows[$selectedIndex].Selected=$true}
+    } finally {$script:rendering=$false}
 }
 $tree.Add_AfterSelect({ $script:detail.Text=ConvertTo-Json -InputObject $tree.SelectedNode.Tag -Depth 8 })
 $tree.Add_NodeMouseDoubleClick({

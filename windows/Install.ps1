@@ -16,9 +16,17 @@ if ($os.ProductType -eq 1 -or [int]$os.BuildNumber -notin @(17763,20348) -or -no
 [Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $root=Join-Path $env:ProgramData 'CCDC-BlueTeam'
 $null=New-Item -Path $root -ItemType Directory -Force
-# Elevated code and command-line evidence must not be writable/readable by standard users.
-& icacls.exe $root /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Cannot protect installation directory.' }
+# Reject a redirected install root before operating on it. Replace the root ACL
+# entirely so an explicitly granted Users rule cannot survive a repeat installation.
+if ((Get-Item -LiteralPath $root).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Installation root must not be a reparse point.' }
+$acl=New-Object Security.AccessControl.DirectorySecurity
+$acl.SetAccessRuleProtection($true,$false)
+foreach($sidText in @('S-1-5-18','S-1-5-32-544')) {
+    $sid=New-Object Security.Principal.SecurityIdentifier($sidText)
+    $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
+    $acl.AddAccessRule($rule)
+}
+Set-Acl -LiteralPath $root -AclObject $acl
 $lock=$null;$transcribing=$false;$staging=$null
 $stamp=(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+[guid]::NewGuid().ToString('N').Substring(0,8)
 $log=Join-Path $root ('install-'+$stamp+'.log')
