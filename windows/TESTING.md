@@ -66,3 +66,12 @@ Windows desktop session). Do not alter any existing VM. A connected Linux cloud
 desktop is not access to the user's Windows computer.
 
 Actual run outcomes and outstanding failures are recorded below after execution.
+
+## Additional scope from operator feedback
+
+`Test-DirectState.ps1` uses synthetic live-state snapshots to verify behavior alerts
+for SYSTEM-owned SQL children, persistence differences without Event Logs, sensor
+changes, PID reuse, independent journaling and preservation of state on failed queries.
+Windows CI runs this alongside the original collector suite. Additional real-VM
+checks validate native direct snapshots; domain/Testimo execution needs a domain lab.
+The uploaded packet is local reference material and is not committed to this public PR.

@@ -35,6 +35,10 @@ Assert ($r.Data.Path -eq '' -and $r.Kind -eq 'POWERSHELL') 'Empty EventData fiel
 $clearXml='<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><EventID>1102</EventID><TimeCreated SystemTime="2026-11-14T18:00:01Z"/><EventRecordID>9</EventRecordID><Channel>Security</Channel><Computer>LAB</Computer></System><UserData><LogFileCleared xmlns="http://manifests.microsoft.com/win/2004/08/windows/eventlog"><SubjectUserName>lab-admin</SubjectUserName></LogFileCleared></UserData></Event>'
 $r=ConvertTo-CcdcEvent $clearXml $profile
 Assert ($r.Data.SubjectUserName -eq 'lab-admin' -and $r.Severity -eq 'REVIEW') 'UserData-only records must not poison a channel batch'
+$r=ConvertTo-CcdcEvent (New-Xml 91 'Microsoft-Windows-WinRM/Operational' 10 @{ResourceUri='http://schemas.microsoft.com/powershell/Microsoft.PowerShell'}) $profile
+Assert ($r.Kind -eq 'REMOTE-MANAGEMENT' -and $r.Severity -eq 'INFO') 'Ordinary WinRM telemetry must not claim a malicious client'
+$r=ConvertTo-CcdcEvent (New-Xml 4104 'Microsoft-Windows-PowerShell/Operational' 11 @{ScriptBlockText='Invoke-Binary sample.exe';User='NT AUTHORITY\SYSTEM'}) $profile
+Assert ($r.Severity -eq 'REVIEW') 'Remote-tool behavior must alert even for SYSTEM'
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('ccdc-tests-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $temp
 try {

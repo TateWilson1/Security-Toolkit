@@ -231,7 +231,7 @@ Retest result from scoring portal:
         $folder = Join-Path $OutputDir ("events-{0}-{1}" -f $env:COMPUTERNAME,$stamp)
         New-Item -ItemType Directory -Path $folder -Force | Out-Null
         $results=@()
-        foreach ($channel in @('Microsoft-Windows-Sysmon/Operational','Security','System','Microsoft-Windows-PowerShell/Operational')) {
+        foreach ($channel in @('Microsoft-Windows-Sysmon/Operational','Security','System','Microsoft-Windows-WinRM/Operational','Microsoft-Windows-PowerShell/Operational')) {
             $file=Join-Path $folder (($channel -replace '[/\\]','-')+'.evtx')
             # Native EVTX preserves structured fields and avoids CSV formula interpretation.
             $milliseconds=[long][Math]::Abs($ExportMinutes)*60000
@@ -262,9 +262,18 @@ Retest result from scoring portal:
         $profile=Read-CcdcProfile $ProfilePath
         $data=Join-Path $OutputDir 'Telemetry'
         Write-Host "Collecting into $data; detection only. Ctrl+C stops collection."
+        $directTime=[datetime]::MinValue;$persistenceTime=[datetime]::MinValue
         while ($true) {
             $batch=Receive-CcdcBatch -DataDirectory $data -Profile $profile
-            foreach ($r in $batch.Records) {
+            $directRows=@()
+            if((Get-Date) -gt $directTime.AddSeconds(5)){
+                $includePersistence=(Get-Date) -gt $persistenceTime.AddSeconds(30)
+                $direct=Get-CcdcDirectState -IncludePersistence:$includePersistence
+                $directRows=@(Receive-CcdcDirectState -DataDirectory $data -Profile $profile -Snapshot $direct)
+                $direct.Health | Where-Object {$_ -match 'ERROR|UNAVAILABLE|not running'} | ForEach-Object {Write-Warning $_}
+                $directTime=Get-Date;if($includePersistence){$persistenceTime=Get-Date}
+            }
+            foreach ($r in (@($batch.Records)+@($directRows))) {
                 $color=if($r.Severity -eq 'HIGH'){'Red'}elseif($r.Severity -eq 'REVIEW'){'Yellow'}else{'Gray'}
                 Write-Host ("{0} [{1}] {2} {3} PID {4} {5}" -f $r.Time,$r.Severity,$r.Kind,$r.Image,$r.ProcessId,$r.CommandLine) -ForegroundColor $color
             }

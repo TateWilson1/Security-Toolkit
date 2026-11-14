@@ -54,7 +54,7 @@ try {
     $manifestPath=Join-Path $staging 'manifest.json'
     Invoke-WebRequest "$base/manifest.json" -UseBasicParsing -OutFile $manifestPath
     $manifest=Get-Content $manifestPath -Raw | ConvertFrom-Json
-    $required=@('CCDC-BlueTeam.ps1','Dashboard.ps1','Monitoring.psm1','ccdc-sysmon.xml','profile.default.json','README.md','CCDC-Playbook.md','Install.ps1','TESTING.md')
+    $required=@('AD-Assessment.ps1','CCDC-BlueTeam.ps1','Dashboard.ps1','Monitoring.psm1','ccdc-sysmon.xml','profile.default.json','README.md','CCDC-Playbook.md','Install.ps1','TESTING.md')
     foreach($name in $required) {
         $entry=$manifest.PSObject.Properties[$name]
         if (-not $entry -or $entry.Value -notmatch '^[A-Fa-f0-9]{64}$') { throw "Missing or invalid manifest hash for $name" }

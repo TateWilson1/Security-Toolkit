@@ -90,6 +90,26 @@ try {
         Import-Module (Join-Path $installed 'Monitoring.psm1')
         if(-not @(Get-CcdcHistory $data).Count){throw 'History missing after reload'}
     }
+    Test-Step 'Direct native process, sockets and persistence (independent of Event Logs)' {
+        $directData=Join-Path $ResultsDirectory 'direct-telemetry'
+        $before=Get-CcdcDirectState -IncludePersistence
+        if(-not $before.ProcessesAvailable -or -not $before.PersistenceAvailable -or -not $before.ConnectionsAvailable){throw ($before.Health -join '; ')}
+        $null=Receive-CcdcDirectState $directData $profile $before
+        $taskName='CCDC-Lab-'+[guid]::NewGuid().ToString('N')
+        $heldProcess=$null
+        try{
+            $action=New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c echo '+$marker)
+            $null=Register-ScheduledTask -TaskName $taskName -Action $action -Description 'Disposable CCDC integration test; never executed'
+            $heldProcess=Start-Process powershell.exe -ArgumentList ('-NoProfile -Command "Write-Output '+$marker+'-direct; Start-Sleep -Seconds 30"') -PassThru
+            $after=Get-CcdcDirectState -IncludePersistence
+            $rows=@(Receive-CcdcDirectState $directData $profile $after)
+            if(-not @($rows | Where-Object {$_.Kind -eq 'PROCESS' -and $_.CommandLine -like "*$marker-direct*" -and $_.Severity -eq 'REVIEW'}).Count){throw 'Direct process behavior observation missing'}
+            if(-not @($rows | Where-Object {$_.Kind -eq 'PERSISTENCE' -and $_.Data.Object -like "*$taskName*"}).Count){throw 'Direct task change missing'}
+        }finally{
+            if($heldProcess -and -not $heldProcess.HasExited){Stop-Process -Id $heldProcess.Id}
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    }
     Test-Step 'GUI startup, background collection, screenshot' {
         $report=Join-Path $ResultsDirectory 'gui.json'
         $process=Start-Process powershell.exe -ArgumentList ('-NoProfile -STA -ExecutionPolicy Bypass -File "'+(Join-Path $installed 'Dashboard.ps1')+'" -SmokeTestReport "'+$report+'"') -PassThru -RedirectStandardError (Join-Path $ResultsDirectory 'gui-errors.txt')

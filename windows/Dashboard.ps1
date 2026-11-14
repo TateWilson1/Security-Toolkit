@@ -89,6 +89,57 @@ function New-Tab([string]$label) {
     [void]$tabs.TabPages.Add($t)
     return $t
 }
+$tOverview=New-Tab 'START HERE'
+$overviewPanel=New-Object System.Windows.Forms.Panel
+$overviewPanel.Dock='Top';$overviewPanel.Height=118
+$overviewTitle=New-Object System.Windows.Forms.Label
+$overviewTitle.Dock='Top';$overviewTitle.Height=40;$overviewTitle.Text='Starting monitoring...'
+$overviewTitle.Font=[System.Drawing.Font]::new('Segoe UI',17,[System.Drawing.FontStyle]::Bold)
+$coverage=New-Object System.Windows.Forms.Label
+$coverage.Dock='Top';$coverage.Height=36;$coverage.ForeColor=$amber
+$coverage.Text='Checking visibility. A quiet screen does not prove a server is safe.'
+$legend=New-Object System.Windows.Forms.Label
+$legend.Dock='Top';$legend.Height=32;$legend.ForeColor=$fg
+$legend.Text='RED: Investigate first    |    AMBER: Review with a teammate    |    GREEN: No rule matched (not verified safe)'
+$overviewPanel.Controls.Add($legend);$overviewPanel.Controls.Add($coverage);$overviewPanel.Controls.Add($overviewTitle)
+$overviewSplit=New-Object System.Windows.Forms.SplitContainer
+$overviewSplit.Dock='Fill';$overviewSplit.Orientation='Horizontal';$overviewSplit.Size=[System.Drawing.Size]::new(1200,500);$overviewSplit.SplitterDistance=260
+$overviewGrid=New-Object System.Windows.Forms.DataGridView
+$overviewText=New-Object System.Windows.Forms.TextBox
+$overviewText.Dock='Fill';$overviewText.Multiline=$true;$overviewText.ReadOnly=$true;$overviewText.ScrollBars='Both'
+$overviewText.BackColor=$bg;$overviewText.ForeColor=$fg;$overviewText.Font=[System.Drawing.Font]::new('Segoe UI',11)
+$overviewText.Text='Choose an item above. Start with red, then amber. Read why it was flagged and check with a teammate before responding.'
+$overviewSplit.Panel1.Controls.Add($overviewGrid);$overviewSplit.Panel2.Controls.Add($overviewText)
+$tOverview.Controls.Add($overviewSplit);$tOverview.Controls.Add($overviewPanel)
+$tAd=New-Tab 'Active Directory'
+$adText=New-Object System.Windows.Forms.TextBox
+$adText.Dock='Fill';$adText.Multiline=$true;$adText.ReadOnly=$true;$adText.BackColor=$bg;$adText.ForeColor=$fg
+$adText.Font=[System.Drawing.Font]::new('Segoe UI',12)
+$adText.Text=@'
+ACTIVE DIRECTORY - UNDERSTAND BEFORE CHANGING
+
+Quick AD overview: show privileged membership, risky account settings and password policy.
+This collects current AD state directly; it does not depend on Event Logs.
+
+Testimo assessment: optional focused checks for password policy and Kerberos account age.
+Requires a reviewed Testimo installation and its dependencies, plus AD access.
+No automatic module downloads, full-forest sweep or remediation.
+
+A failed health check is something to review, not proof an account is malicious.
+SYSTEM and service accounts can be used by attackers. Account name alone never clears activity.
+Scoring can legitimately use WinRM and PowerShell. Confirm changes with a teammate.
+
+Reports open in the local browser and are saved under Evidence\AD.
+These assessments are on demand; they are not continuous AD change monitoring.
+'@
+$adButtons=New-Object System.Windows.Forms.FlowLayoutPanel
+$adButtons.Dock='Top';$adButtons.Height=48
+foreach($label in @('Quick AD overview','Run focused Testimo checks')){
+    $button=New-Object System.Windows.Forms.Button;$button.Text=$label;$button.AutoSize=$true;$button.Height=36
+    $adButtons.Controls.Add($button)
+    if($label -like 'Quick*'){$adInventory=$button}else{$adTestimo=$button}
+}
+$tAd.Controls.Add($adText);$tAd.Controls.Add($adButtons)
 $tEvent=New-Tab 'Process + Connection Events'
 $tTcp=New-Tab 'Live TCP Sessions'
 $tArchive=New-Tab 'Search archive'
@@ -132,6 +183,32 @@ function Set-Grid($g) {
     $g.Font=[System.Drawing.Font]::new('Segoe UI',9)
     $g.RowTemplate.Height=26
 }
+Set-Grid $overviewGrid
+foreach($column in @(@('Priority','What to do'),@('What','What happened'),@('Why','Why it needs attention'),@('Account','Account (context only)'))){[void]$overviewGrid.Columns.Add($column[0],$column[1])}
+$overviewGrid.Columns['Why'].FillWeight=220
+function Explain-Event($r){
+    $label=if($r.Severity -eq 'HIGH'){'INVESTIGATE FIRST'}elseif($r.Severity -eq 'REVIEW'){'REVIEW WITH A TEAMMATE'}else{'NO RULE MATCHED - KEEP MONITORING'}
+    $why=if(@($r.Reasons).Count){$r.Reasons -join [Environment]::NewLine}else{'No detection rule matched. This does not prove the activity is safe.'}
+    @(
+        $label
+        ''
+        ('What: '+$r.Kind+' - '+$r.Image)
+        ('Why: '+$why)
+        ('When (local): '+[datetimeoffset]::Parse($r.Time).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz'))
+        ('Account: '+$r.User+' (even SYSTEM or a service account can be compromised)')
+        ('Parent: '+$r.ParentImage)
+        ('Command: '+$r.CommandLine)
+        ('Network: '+$r.SourceIp+':'+$r.SourcePort+' -> '+$r.DestinationIp+':'+$r.DestinationPort)
+        ('Observation source: '+$r.Channel)
+        ''
+        'NEXT: Check whether a teammate, scoring engine or application was expected to do this.'
+        'Save evidence. Ask a teammate before stopping anything. Recheck scoring after any response.'
+        ''
+        'TECHNICAL EVIDENCE (for detailed investigation):'
+        (ConvertTo-Json -InputObject $r -Depth 8)
+    ) -join [Environment]::NewLine
+}
+$overviewGrid.Add_SelectionChanged({if(-not $script:rendering -and $overviewGrid.CurrentRow -and $overviewGrid.CurrentRow.Tag){$overviewText.Text=Explain-Event $overviewGrid.CurrentRow.Tag}})
 $split=New-Object System.Windows.Forms.SplitContainer
 $split.Dock='Fill';$split.Orientation='Horizontal';$split.Size=[System.Drawing.Size]::new(1200,600);$split.SplitterDistance=390
 $tEvent.Controls.Add($split)
@@ -159,7 +236,7 @@ $script:detail.Text='Select a timeline event for FULL command line, parent, even
 $split.Panel2.Controls.Add($script:detail)
 $script:eventGrid.Add_SelectionChanged({
     if(-not $script:rendering -and $script:eventGrid.SelectedRows.Count -gt 0 -and $script:eventGrid.SelectedRows[0].Tag){
-        $script:detail.Text=ConvertTo-Json -InputObject $script:eventGrid.SelectedRows[0].Tag -Depth 8
+        $script:detail.Text=Explain-Event $script:eventGrid.SelectedRows[0].Tag
     }
 })
 $script:tcp=New-Object System.Windows.Forms.DataGridView
@@ -217,6 +294,8 @@ Windows Defender Antivirus is a separate prevention layer.
 If its real-time protection is ACTIVE, it can quarantine malware
 that it recognizes. This GUI does not trigger quarantine itself.
 '@
+$instructions.AppendText(([Environment]::NewLine+'CURRENT PROFILE GUARDRAILS'+[Environment]::NewLine+($profile.Safeguards -join [Environment]::NewLine)))
+$instructions.AppendText(([Environment]::NewLine+($profile.ScoredServices | Format-Table Role,Service,Protocol,Port,Check -AutoSize | Out-String -Width 150)))
 $tNotes.Controls.Add($instructions)
 # Search operates on the most recent 1200 retained rows, including replay at startup.
 $search=New-Object System.Windows.Forms.TextBox
@@ -236,7 +315,19 @@ function Show-Recent {
     $script:rendering=$true
     try {
     $script:eventGrid.Rows.Clear()
+    $overviewGrid.Rows.Clear()
     $selectedIndex=-1
+    $high=@($script:recent | Where-Object Severity -eq 'HIGH').Count
+    $review=@($script:recent | Where-Object Severity -eq 'REVIEW').Count
+    if($high){$overviewTitle.Text="Investigate first: $high red items";$overviewTitle.ForeColor=$red}
+    elseif($review){$overviewTitle.Text="Review next: $review amber items";$overviewTitle.ForeColor=$amber}
+    else{$overviewTitle.Text='No alerts in the recent window - keep monitoring';$overviewTitle.ForeColor=[System.Drawing.Color]::LightGreen}
+    foreach($r in ($script:recent | Where-Object Severity -ne 'INFO' | Sort-Object @{Expression={if($_.Severity -eq 'HIGH'){0}else{1}}},@{Expression='Time';Descending=$true} | Select-Object -First 150)){
+        $label=if($r.Severity -eq 'HIGH'){'RED - Investigate first'}else{'AMBER - Review'}
+        $i=$overviewGrid.Rows.Add([object[]]@($label,($r.Kind+' '+($r.Image -split '\\')[-1]),($r.Reasons -join '; '),$r.User))
+        $overviewGrid.Rows[$i].Tag=$r
+        $overviewGrid.Rows[$i].DefaultCellStyle.ForeColor=if($r.Severity -eq 'HIGH'){$red}else{$amber}
+    }
     $needle=$search.Text
     foreach ($r in ($script:recent | Sort-Object Time,Channel,RecordId)) {
         if ($script:onlyAlerts -and $r.Severity -eq 'INFO') { continue }
@@ -250,6 +341,7 @@ function Show-Recent {
         if($r.Key -eq $selectedKey){$selectedIndex=$index}
         if ($r.Severity -eq 'HIGH') { $row.DefaultCellStyle.ForeColor=$red }
         elseif ($r.Severity -eq 'REVIEW') { $row.DefaultCellStyle.ForeColor=$amber }
+        else {$row.DefaultCellStyle.ForeColor=[System.Drawing.Color]::LightGreen}
     }
     # GUIDs distinguish process lifetimes despite PID reuse. Missing parents stay explicit.
     $tree.BeginUpdate();$tree.Nodes.Clear();$nodes=@{}
@@ -268,6 +360,7 @@ function Show-Recent {
         } else { $node.Text+=' (parent outside retained view or unavailable)';[void]$tree.Nodes.Add($node) }
     }
     $tree.EndUpdate()
+    $overviewGrid.ClearSelection()
     $script:eventGrid.ClearSelection()
     if($selectedIndex -ge 0){$script:eventGrid.CurrentCell=$script:eventGrid.Rows[$selectedIndex].Cells[0];$script:eventGrid.Rows[$selectedIndex].Selected=$true}
     } finally {$script:rendering=$false}
@@ -282,6 +375,12 @@ function Run-Mode([string]$mode){
     $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$helper+'" -Mode '+$mode+' -Role '+$script:role+' -OutputDir "'+(Join-Path $env:ProgramData 'CCDC-BlueTeam\Evidence')+'"'
     Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments
 }
+function Run-AdAssessment([string]$mode){
+    $path=Join-Path $PSScriptRoot 'AD-Assessment.ps1'
+    Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList ('-NoExit -NoProfile -ExecutionPolicy Bypass -File "'+$path+'" -Mode '+$mode)
+}
+$adInventory.Add_Click({Run-AdAssessment 'Inventory'})
+$adTestimo.Add_Click({Run-AdAssessment 'Testimo'})
 $bBaseline.Add_Click({Run-Mode 'Baseline'})
 $bCheck.Add_Click({Run-Mode 'Check'})
 $bExport.Add_Click({Run-Mode 'Export'})
@@ -308,22 +407,25 @@ $collect={
     $history=@();if($first){$history=@(Get-CcdcHistory $data)}
     $archive=@();if($searchArchive){$archive=@(Get-CcdcHistory -DataDirectory $data -Query $archiveQuery)}
     $batch=Receive-CcdcBatch -DataDirectory $data -Profile $profile
-    $tcpRows=@();$extra=@()
-    try {
-        $names=@{};foreach($p in Get-Process){$names[[string]$p.Id]=$p.ProcessName}
-        $tcpRows=@(Get-NetTCPConnection -ErrorAction Stop | Select-Object -First 2000 | ForEach-Object {
-            [pscustomobject]@{Local=('['+$_.LocalAddress+']:'+$_.LocalPort);Remote=('['+$_.RemoteAddress+']:'+$_.RemotePort)
-                ProcessId=$_.OwningProcess;Process=$names[[string]$_.OwningProcess];State=[string]$_.State}
-        })
-        $extra+='TCP snapshot: '+$tcpRows.Count+' rows (display cap 2000; short connections may be absent)'
-    } catch {$extra+='TCP unavailable: '+$_.Exception.Message}
+    $directRows=@();$extra=@()
+    if (-not (Get-Variable directTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $directTime.AddSeconds(5)) {
+        $includePersistence=(-not (Get-Variable persistenceTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $persistenceTime.AddSeconds(30))
+        $direct=Get-CcdcDirectState -IncludePersistence:$includePersistence
+        $directRows=@(Receive-CcdcDirectState -DataDirectory $data -Profile $profile -Snapshot $direct)
+        $directTime=Get-Date;if($includePersistence){$persistenceTime=Get-Date}
+    }
+    $extra=@($direct.Health)
+    $tcpRows=@($direct.Connections | Select-Object -First 2000 | ForEach-Object {
+        [pscustomobject]@{Local=('['+$_.LocalAddress+']:'+$_.LocalPort);Remote=('['+$_.RemoteAddress+']:'+$_.RemotePort)
+            ProcessId=$_.ProcessId;Process=$_.Image;State=$_.State}
+    })
     # Query Defender once every 30 seconds in the persistent runspace.
     if (-not (Get-Variable defenderTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $defenderTime.AddSeconds(30)) {
         $defenderTime=Get-Date
         try {$defender=Get-MpComputerStatus -ErrorAction Stop | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureLastUpdated | Format-List | Out-String}
         catch {$defender='Defender unavailable: '+$_.Exception.Message}
     }
-    [pscustomobject]@{Records=@($history)+@($batch.Records);Health=@($batch.Health)+$extra;Tcp=$tcpRows;Defender=$defender;Archive=$archive;ArchiveSearched=$searchArchive}
+    [pscustomobject]@{Records=@($history)+@($batch.Records)+@($directRows);Health=@($batch.Health)+$extra;Tcp=$tcpRows;Defender=$defender;Archive=$archive;ArchiveSearched=$searchArchive}
 }
 $timer=New-Object System.Windows.Forms.Timer
 $timer.Interval=2000
@@ -352,8 +454,10 @@ $timer.Add_Tick({
             }
             $script:counters.Text="Events $script:count | Alerts $script:alertCount"
             $healthBox.Text=($batch.Health -join [Environment]::NewLine)+[Environment]::NewLine+$batch.Defender
-            $script:status.Text='Collection active | Recent 1200 rows | UTC evidence, local display | Detection only'
-            if (@($batch.Health | Where-Object {$_ -match 'ERROR|UNAVAILABLE|gap|RESET|backlog'}).Count) {
+            $script:status.Text='Monitoring processes, sockets and logs | Account names do not establish trust | Detection only'
+            $coverage.Text='Visibility available. Direct snapshots supplement Event Logs; neither proves complete coverage.';$coverage.ForeColor=[System.Drawing.Color]::LightGreen
+            if (@($batch.Health | Where-Object {$_ -match 'ERROR|UNAVAILABLE|gap|RESET|backlog|not running|not active|unavailable|not enabled'}).Count) {
+                $coverage.Text='VISIBILITY WARNING: open Sources + Defender. Missing data can hide activity.';$coverage.ForeColor=$amber
                 $script:status.Text='Coverage warning / backlog - see Sources + Defender | Detection only'
             }
             if (-not $script:paused) {
@@ -361,7 +465,7 @@ $timer.Add_Tick({
                 $script:tcp.Rows.Clear()
                 foreach($c in $batch.Tcp){[void]$script:tcp.Rows.Add([object[]]@($c.Local,$c.Remote,[string]$c.ProcessId,$c.Process,$c.State))}
             }
-        } catch { $script:status.Text='COLLECTION ERROR: '+$_.Exception.Message;$archiveButton.Enabled=$true }
+        } catch { $coverage.Text='MONITORING ERROR - investigate visibility before trusting a quiet screen';$coverage.ForeColor=$red;$script:status.Text='COLLECTION ERROR: '+$_.Exception.Message;$archiveButton.Enabled=$true }
         $script:pending=$null
     }
     if ($SmokeTestReport -and ((Get-Date)-$script:smokeStart).TotalSeconds -ge 20) {

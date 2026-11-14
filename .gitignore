@@ -1,0 +1,6 @@
+# Local evidence and competition material must never be published.
+windows/tests/results/
+*.evtx
+*.clixml
+*.log
+private/

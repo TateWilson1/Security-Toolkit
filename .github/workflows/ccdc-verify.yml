@@ -17,7 +17,9 @@ jobs:
         run: ./windows/tests/Test-Static.ps1
       - name: Telemetry and detection regressions
         shell: powershell
-        run: ./windows/tests/Test-Monitoring.ps1
+        run: |
+          ./windows/tests/Test-Monitoring.ps1
+          ./windows/tests/Test-DirectState.ps1
   integration:
     needs: validate
     # Installer resolves an actual repository commit, not GitHub's synthetic PR merge.

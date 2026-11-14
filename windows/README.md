@@ -172,3 +172,80 @@ new records to exceed the saved counter may not be detected. Script block loggin
 can be bypassed and native actions may not expose command content. Sysmon is free
 Microsoft software, **not open source**. See the [playbook](CCDC-Playbook.md) for
 operator context; prior packet details are historical, never a current profile.
+
+## CCDC operation when credentials or logs cannot be trusted
+
+No username, SYSTEM identity, service identity, signed binary, or known management
+address is a blanket trust exemption. Behavior rules also apply to direct live
+process observations. The toolkit now samples CIM process state and TCP sockets
+roughly every 5 seconds, retaining first-seen observations and no-longer-observed
+processes in the same journal, separately labeled from recorded creation/exit
+**events**. Creation time + PID distinguishes sampled lifetimes. Parent attribution
+is omitted if PID reuse makes the current parent inconsistent with the child's age.
+
+Every ~30 seconds it compares scheduled task actions/principals, service executable/
+identity/start mode, and HKLM Run/RunOnce/Winlogon values against the previous
+successful snapshot. The first successful state is retained as a baseline, not
+asserted clean. Failed queries preserve the last successful comparison state;
+missing data never invents process exits or persistence deletions. It also observes
+Sysmon service status, logging registry settings and Defender real-time state;
+sensor changes produce an investigation alert. Changes can be legitimate teammate
+work. These are direct state checks and do not require Event Logs to report changes.
+
+Snapshots miss transient activity between observations, and do not enumerate all
+user hives, WMI persistence, kernel objects or process injection. A short connection
+that opens/closes between samples needs event telemetry. An attacker with sufficient
+privilege can tamper with Event Logs **and** CIM/process APIs/toolkit/evidence. An
+approved independent collector or packet capture on allowed infrastructure can add
+an independent viewpoint; this version does not ship an off-host collector. Source
+health warnings remain visible even when there are no red findings.
+
+**Evil-WinRM:** WinRM Operational records, logon events, wsmprovhost/PowerShell
+ancestry, child utilities, script patterns and network behavior provide server-side
+leads. The default profile includes several remote-tool/loading content patterns.
+Names can be changed and encrypted/in-memory actions may have no visible script
+text. Server telemetry generally cannot prove which WinRM client connected;
+ordinary WinRM activity is not labeled confirmed Evil-WinRM. Correlate with known
+team actions and scored PowerShell sessions. No new WinRM service configuration or
+network capture is enabled by adding the channel.
+
+## Easy triage and Testimo
+
+The opening **START HERE** tab puts red **Investigate first** items ahead of amber
+**Review** items. Selecting one explains what happened, why it matched, which
+account ran it and what to check next. Green means **No rule matched**, never a
+verified safe process. Coverage warnings have their own prominent indicator.
+Advanced tabs retain full fields and source identity for an experienced teammate.
+
+**Active Directory** has an on-demand read-only overview and a focused optional
+[Testimo](https://github.com/EvotecIT/Testimo) assessment. The overview reads current
+AD membership, account flags and password policy, without depending on local logs.
+Testimo integration uses its documented `Get-TestimoSources` / `Invoke-Testimo`
+interfaces, explicitly selects DomainPasswordComplexity and DomainKerberosAccountAge,
+scopes to the current domain, saves version/scope/results and opens a local embedded
+HTML report. It does not run Testimo's broad default suite or enable remediation.
+Testimo's own skipped/absent results are **not** considered passes.
+
+Testimo and Microsoft's ActiveDirectory/RSAT module must already be available.
+Review/pin Testimo and its dependencies in the lab; stage them publicly/offline as
+allowed by the packet. An operator may explicitly install a reviewed version with
+`Install-Module Testimo -RequiredVersion <reviewed-version> -Scope AllUsers`; this
+is an optional dependency, not part of the one-command monitoring install. Module
+import and report execution are still unverified on a real AD domain in this PR.
+A basic standalone Server runner cannot validate domain assessments.
+
+## Packet-derived safeguards
+
+The supplied 2026 MWCCDC Invitational packet confirms authenticated WinRM commands,
+DNS resolution, SQL queries, SMB required-file access, RDP authentication, Splunk
+queries/management and HTTP content checks. The profile represents service types
+without team addresses or passwords. Its packet-inspired examples are not authority
+for another competition: the current team portal/injects determine scored services.
+
+Packet rules also call for generally reachable public services (no scorer-only
+allowlists), preserved ICMP and assigned names/addresses, free/open-source tools
+without trials, no workstation repurposing, and no competition snapshot reversion.
+These reinforce detection-only defaults and approved, reversible response. The lab
+harness is for disposable test VMs, not the competition NETLAB environment. Do not
+publish team packets, credentials or private event-specific profiles; keep them out
+of source control. Follow the event's software/staging and outside-assistance rules.

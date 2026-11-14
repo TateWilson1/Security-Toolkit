@@ -78,6 +78,76 @@
       "Pattern": "\\\\(powershell|pwsh|cmd|mshta|rundll32)\\.exe$",
       "Severity": "REVIEW",
       "Description": "Network activity by an interpreter or utility"
+    },
+    {
+      "Id": "remote-tool-script",
+      "Enabled": true,
+      "Kinds": [
+        "PROCESS",
+        "POWERSHELL"
+      ],
+      "Field": "CommandLine",
+      "Pattern": "(evil-?winrm|invoke-binary|invoke-dll|dll-loader|bypass-4msi)",
+      "Severity": "REVIEW",
+      "Description": "Remote-tool or in-memory loading indicator. Inspect behavior; the client is not conclusively identified."
     }
+  ],
+  "ScoredServices": [
+    {
+      "Role": "AD",
+      "Service": "DNS",
+      "Protocol": "TCP/UDP",
+      "Port": 53,
+      "Check": "Functional lookup against required zone"
+    },
+    {
+      "Role": "AD",
+      "Service": "WinRM",
+      "Protocol": "TCP",
+      "Port": 5985,
+      "Check": "Authenticated PowerShell command; verify configured port"
+    },
+    {
+      "Role": "MSSQL",
+      "Service": "SQL",
+      "Protocol": "TCP",
+      "Port": 1433,
+      "Check": "Authenticated query"
+    },
+    {
+      "Role": "MSSQL",
+      "Service": "SMB",
+      "Protocol": "TCP",
+      "Port": 445,
+      "Check": "Authenticated required-file access"
+    },
+    {
+      "Role": "MSSQL",
+      "Service": "RDP",
+      "Protocol": "TCP",
+      "Port": 3389,
+      "Check": "Authenticated connection"
+    },
+    {
+      "Role": "Splunk",
+      "Service": "Search and management",
+      "Protocol": "TCP",
+      "Port": 8089,
+      "Check": "Authenticated query/management; verify configuration"
+    },
+    {
+      "Role": "Web",
+      "Service": "HTTP/HTTPS",
+      "Protocol": "TCP",
+      "Port": "80/443",
+      "Check": "Required page content"
+    }
+  ],
+  "Safeguards": [
+    "Confirm the current team portal; example services are not authoritative",
+    "No scorer-only source allowlists for public services",
+    "Preserve ICMP and assigned names/addresses",
+    "Do not disable unfamiliar scoring or service accounts",
+    "No automatic containment; verify scoring after approved changes"
   ]
 }
