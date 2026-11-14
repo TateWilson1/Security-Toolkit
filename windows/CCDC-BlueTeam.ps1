@@ -24,7 +24,9 @@ param(
     [string]$SysmonConfig = (Join-Path $PSScriptRoot 'ccdc-sysmon.xml'),
     [int]$PollSeconds = 2,
     [int]$ExportMinutes = 60,
-    [switch]$NoBeep
+    [switch]$NoBeep,
+    [string]$ProfilePath = (Join-Path $PSScriptRoot 'profile.default.json'),
+    [switch]$ReplaceSysmonConfig
 )
 $ErrorActionPreference = 'Stop'
 
@@ -85,7 +87,7 @@ function Test-LocalPort {
 
 Assert-Administrator
 if (-not (Test-Path -LiteralPath $OutputDir)) { New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null }
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+[guid]::NewGuid().ToString('N').Substring(0,8)
 Write-Host "CCDC Windows Blue Team | $Mode | $Role | $env:COMPUTERNAME" -ForegroundColor Cyan
 
 switch ($Mode) {
@@ -144,7 +146,7 @@ Observed effect on scoring / business service:
 Response and timestamp:
 Retest result from scoring portal:
 '@ | Set-Content -Path (Join-Path $folder 'incident-template.md') -Encoding UTF8
-        Write-Host "BASELINE COMPLETE: $folder" -ForegroundColor Green
+        Write-Host "BASELINE CAPTURE FINISHED (review collection warnings): $folder" -ForegroundColor Green
         break
     }
     Check {
@@ -176,18 +178,24 @@ Retest result from scoring portal:
     Logging {
         Write-Warning 'This mode changes auditing/PowerShell logging only. It does NOT change users, networking, services or firewall rules.'
         $subcategories = @(
-            @{Name='Process Creation';Failure=$false},
-            @{Name='Logon';Failure=$true},
-            @{Name='User Account Management';Failure=$true},
-            @{Name='Security Group Management';Failure=$true},
-            @{Name='Special Logon';Failure=$false}
+            @{Name='{0CCE922B-69AE-11D9-BED3-505054503030}';Failure=$false},
+            @{Name='{0CCE922C-69AE-11D9-BED3-505054503030}';Failure=$false},
+            @{Name='{0CCE9215-69AE-11D9-BED3-505054503030}';Failure=$true},
+            @{Name='{0CCE9235-69AE-11D9-BED3-505054503030}';Failure=$true},
+            @{Name='{0CCE9237-69AE-11D9-BED3-505054503030}';Failure=$true},
+            @{Name='{0CCE921B-69AE-11D9-BED3-505054503030}';Failure=$false}
         )
         foreach ($s in $subcategories) {
             $args = @('/set',('/subcategory:{0}' -f $s.Name),'/success:enable')
             if ($s.Failure) { $args += '/failure:enable' }
             & auditpol.exe @args | Out-Host
-            if ($LASTEXITCODE -ne 0) { Write-Warning "auditpol failed for: $($s.Name). Configure through GPO instead if centrally managed." }
+            if ($LASTEXITCODE -ne 0) { throw "auditpol failed for $($s.Name), exit $LASTEXITCODE. Logging setup incomplete; check GPO." }
         }
+        # Service/task creation auditing, using locale-independent subcategory GUIDs.
+        & auditpol.exe /set '/subcategory:{0CCE9227-69AE-11D9-BED3-505054503030}' /success:enable | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'Other Object Access Events auditing failed.' }
+        & auditpol.exe /set '/subcategory:{0CCE9211-69AE-11D9-BED3-505054503030}' /success:enable | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'Security System Extension auditing failed.' }
         $auditKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
         New-Item -Path $auditKey -Force | Out-Null
         New-ItemProperty -Path $auditKey -Name 'ProcessCreationIncludeCmdLine_Enabled' -Value 1 -PropertyType DWord -Force | Out-Null
@@ -200,7 +208,13 @@ Retest result from scoring portal:
     Sysmon {
         if (-not (Test-Path -LiteralPath $SysmonExe)) { throw "Sysmon executable not found: $SysmonExe. Download it from Microsoft's official Sysinternals site." }
         if (-not (Test-Path -LiteralPath $SysmonConfig)) { throw "Sysmon XML config not found: $SysmonConfig (keep the XML beside this script)." }
+        $signature=Get-AuthenticodeSignature -FilePath $SysmonExe
+        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Sysmon must have a valid Microsoft signature.' }
         $existing = @(Get-Service -Name Sysmon64,Sysmon -ErrorAction SilentlyContinue)
+        if ($existing.Count -gt 0 -and -not $ReplaceSysmonConfig) {
+            Write-Warning 'Existing Sysmon configuration preserved. Confirm events 1/3/5 are enabled. Explicit -ReplaceSysmonConfig requires a restorable original XML.'
+            break
+        }
         if ($existing.Count -gt 0) {
             Write-Host 'Sysmon already present; applying CCDC process + network rules.' -ForegroundColor Yellow
             & $SysmonExe -c $SysmonConfig | Out-Host
@@ -215,138 +229,42 @@ Retest result from scoring portal:
     Export {
         $folder = Join-Path $OutputDir ("events-{0}-{1}" -f $env:COMPUTERNAME,$stamp)
         New-Item -ItemType Directory -Path $folder -Force | Out-Null
-        $start = (Get-Date).AddMinutes(-[Math]::Abs($ExportMinutes))
-        foreach ($channel in @(
-            @{Label='sysmon';Log='Microsoft-Windows-Sysmon/Operational';Ids=@(1,3,5,11,22)},
-            @{Label='security';Log='Security';Ids=@(4624,4625,4688,4720,4722,4725,4728,4732,4738,4740,1102)},
-            @{Label='powershell';Log='Microsoft-Windows-PowerShell/Operational';Ids=@(4104)}
-        )) {
-            try {
-                $records = @(Get-WinEvent -FilterHashtable @{LogName=$channel.Log;Id=$channel.Ids;StartTime=$start} -MaxEvents 25000 -ErrorAction Stop)
-                $rows = foreach ($ev in $records) {
-                    [pscustomobject]@{ Time=$ev.TimeCreated; Computer=$ev.MachineName; Channel=$channel.Log; EventId=$ev.Id; RecordId=$ev.RecordId; Message=$ev.Message }
-                }
-                $rows | Export-Csv (Join-Path $folder ("{0}.csv" -f $channel.Label)) -NoTypeInformation -Encoding UTF8
-                Write-Host "Exported $($records.Count) $($channel.Label) events" -ForegroundColor Green
-            } catch { Write-Warning "Could not export $($channel.Label): $($_.Exception.Message)" }
+        $results=@()
+        foreach ($channel in @('Microsoft-Windows-Sysmon/Operational','Security','System','Microsoft-Windows-PowerShell/Operational')) {
+            $file=Join-Path $folder (($channel -replace '[/\\]','-')+'.evtx')
+            # Native EVTX preserves structured fields and avoids CSV formula interpretation.
+            $milliseconds=[long][Math]::Abs($ExportMinutes)*60000
+            $query="*[System[TimeCreated[timediff(@SystemTime) <= $milliseconds]]]"
+            $message=(& wevtutil.exe epl $channel $file "/q:$query" /ow:true 2>&1 | Out-String)
+            $code=$LASTEXITCODE
+            $results += [pscustomobject]@{Channel=$channel;ExitCode=$code;Message=$message;File=$file}
+        }
+        $telemetry=Join-Path $OutputDir 'Telemetry'
+        if (Test-Path $telemetry) {
+            Copy-Item -LiteralPath $telemetry -Destination (Join-Path $folder 'Telemetry') -Recurse -Force
+        }
+        $results | ConvertTo-Json | Set-Content (Join-Path $folder 'export-status.json') -Encoding UTF8
+        Get-ChildItem $folder -Recurse -File | Where-Object {$_.Name -ne 'SHA256.csv'} |
+            Get-FileHash -Algorithm SHA256 | Export-Csv (Join-Path $folder 'SHA256.csv') -NoTypeInformation
+        if (@($results | Where-Object {$_.ExitCode -ne 0}).Count) {
+            throw "PARTIAL export: $folder. See export-status.json; missing logs may be unavailable."
         }
         Write-Host "EVENT EXPORT: $folder" -ForegroundColor Green
         break
     }
     Watch {
-        if ($PollSeconds -lt 1) { $PollSeconds = 1 }
-        $outfile = Join-Path $OutputDir ("watch-{0}-{1}.csv" -f $env:COMPUTERNAME,$stamp)
-        $subscriptions = @(
-            [pscustomobject]@{Log='Microsoft-Windows-Sysmon/Operational';Ids=@(1,3,5);LastId=[long]0},
-            [pscustomobject]@{Log='Security';Ids=@(4624,4625,4688,4720,4722,4725,4728,4732,4738,4740,1102);LastId=[long]0},
-            [pscustomobject]@{Log='Microsoft-Windows-PowerShell/Operational';Ids=@(4104);LastId=[long]0}
-        )
-        $enabled = @()
-        foreach ($sub in $subscriptions) {
-            try {
-                $log = Get-WinEvent -ListLog $sub.Log -ErrorAction Stop
-                if (-not $log.IsEnabled) { Write-Warning "$($sub.Log) exists but is disabled"; continue }
-                $head = Get-WinEvent -LogName $sub.Log -MaxEvents 1 -ErrorAction SilentlyContinue
-                if ($head) { $sub.LastId = [long]$head.RecordId }
-                $enabled += $sub
-                Write-Host "Monitoring $($sub.Log) (new events only)" -ForegroundColor Green
-            } catch { Write-Warning "$($sub.Log) unavailable: $($_.Exception.Message)" }
-        }
-        if (-not ($enabled | Where-Object { $_.Log -like '*Sysmon*' })) {
-            Write-Warning 'Sysmon not found: process/network coverage will be incomplete. Run the Sysmon mode first.'
-        }
-        $previousTcp = @{}
-        $rowsSaved = 0
-        Write-Host "LIVE: Ctrl+C stops watcher. Full records saved to $outfile" -ForegroundColor Cyan
-        Write-Host 'RED=high-signal activity; YELLOW=review; GREY/CYAN=normal telemetry. Alerts are not proof of compromise.' -ForegroundColor Yellow
+        Import-Module (Join-Path $PSScriptRoot 'Monitoring.psm1') -Force
+        $profile=Read-CcdcProfile $ProfilePath
+        $data=Join-Path $OutputDir 'Telemetry'
+        Write-Host "Collecting into $data; detection only. Ctrl+C stops collection."
         while ($true) {
-            foreach ($sub in $enabled) {
-                try {
-                    $idExpr = (($sub.Ids | ForEach-Object { "EventID=$_" }) -join ' or ')
-                    $xpath = "*[System[(EventRecordID > $($sub.LastId)) and ($idExpr)]]"
-                    $events = @(Get-WinEvent -LogName $sub.Log -FilterXPath $xpath -MaxEvents 2000 -ErrorAction SilentlyContinue | Sort-Object RecordId)
-                    if ($events.Count -ge 2000) { Write-Warning "Heavy event volume on $($sub.Log); consider forwarding events to Wazuh for loss-resistant monitoring." }
-                    foreach ($ev in $events) {
-                        if ([long]$ev.RecordId -le $sub.LastId) { continue }
-                        $sub.LastId = [long]$ev.RecordId
-                        $d = Get-DataMap $ev
-                        $type = 'EVENT'; $severity='INFO'; $image='';$parent='';$cmd='';$source='';$dest='';$port='';$user='';$details=''
-                        switch ($ev.Id) {
-                            1 {
-                                $type='PROCESS'; $image=Get-Value $d 'Image'; $parent=Get-Value $d 'ParentImage'
-                                $cmd=Get-Value $d 'CommandLine'; $user=Get-Value $d 'User'
-                                if ($image -match '(?i)\\(powershell|pwsh|cmd|mshta|rundll32|regsvr32|certutil|wmic|wscript|cscript|psexec|schtasks|bitsadmin)\.exe$' -or
-                                    $parent -match '(?i)\\(wsmprovhost|wmiprvse|w3wp|sqlservr)\.exe$') { $severity='REVIEW' }
-                                if ($parent -match '(?i)\\(wsmprovhost|w3wp|sqlservr)\.exe$' -and $image -match '(?i)\\(powershell|pwsh|cmd|mshta|rundll32)\.exe$') { $severity='HIGH' }
-                                $details='Sysmon process start'
-                            }
-                            3 {
-                                $type='NETWORK'; $image=Get-Value $d 'Image';$source=(Get-Value $d 'SourceIp')+':'+(Get-Value $d 'SourcePort')
-                                $dest=Get-Value $d 'DestinationIp'; $port=Get-Value $d 'DestinationPort';$user=Get-Value $d 'User'
-                                $details='Sysmon TCP/UDP connection'
-                                if ($image -match '(?i)\\(powershell|pwsh|cmd|mshta|rundll32|certutil)\.exe$') { $severity='REVIEW' }
-                            }
-                            5 { $type='EXIT';$image=Get-Value $d 'Image';$details='Sysmon process terminated' }
-                            4688 {
-                                if ($enabled | Where-Object { $_.Log -like '*Sysmon*' }) { continue }
-                                $type='PROCESS';$image=Get-Value $d 'NewProcessName';$parent=Get-Value $d 'ParentProcessName'
-                                $cmd=Get-Value $d 'CommandLine';$user=Get-Value $d 'SubjectUserName'
-                                $details='Windows process start (fallback: Sysmon absent)'
-                                if ($image -match '(?i)\\(powershell|pwsh|cmd|mshta|rundll32|regsvr32|certutil|wmic)\.exe$') { $severity='REVIEW' }
-                            }
-                            4624 {
-                                $logonType=Get-Value $d 'LogonType'
-                                if ($logonType -notin @('2','3','10')) { continue }
-                                $type='LOGIN';$user=Get-Value $d 'TargetUserName';$source=Get-Value $d 'IpAddress'
-                                $details="Successful logon type $logonType (can be legitimate scoring)"
-                            }
-                            4625 {
-                                $type='LOGIN-FAILED';$user=Get-Value $d 'TargetUserName';$source=Get-Value $d 'IpAddress';$severity='REVIEW'
-                                $details='Failed logon (can be mistyped credentials or service monitor)'
-                            }
-                            4104 {
-                                $type='POWERSHELL';$cmd=Get-Value $d 'ScriptBlockText';$details='Script block recorded'
-                                if ($cmd -match '(?i)(frombase64string|downloadstring|invoke-expression|iex\s|encodedcommand|add-mppreference|set-mppreference)') { $severity='REVIEW' }
-                            }
-                            default {
-                                $type='ACCOUNT/SECURITY';$severity='HIGH';$user=Get-Value $d 'TargetUserName';$details="Windows Security Event $($ev.Id)"
-                            }
-                        }
-                        $row = [pscustomobject]@{
-                            Time=$ev.TimeCreated.ToString('o'); Host=$env:COMPUTERNAME; Severity=$severity; Type=$type;
-                            EventId=$ev.Id;RecordId=$ev.RecordId;Image=$image;Parent=$parent;CommandLine=$cmd;
-                            Source=$source;Destination=$dest;DestinationPort=$port;User=$user;Details=$details
-                        }
-                        if ($rowsSaved -eq 0) { $row | Export-Csv -Path $outfile -NoTypeInformation -Encoding UTF8 }
-                        else { $row | Export-Csv -Path $outfile -NoTypeInformation -Encoding UTF8 -Append }
-                        $rowsSaved++
-                        $c = if ($severity -eq 'HIGH') { 'Red' } elseif ($severity -eq 'REVIEW') { 'Yellow' } else { 'Gray' }
-                        $short = if ($type -eq 'NETWORK') { "$source -> ${dest}:$port $image" }
-                                 elseif ($type -eq 'LOGIN' -or $type -eq 'LOGIN-FAILED') { "$user from $source $details" }
-                                 else { "$image $cmd ($parent) $details" }
-                        if ($short.Length -gt 210) { $short = $short.Substring(0,210)+'...' }
-                        Write-Host ("{0:HH:mm:ss} [{1}] {2}: {3}" -f $ev.TimeCreated,$severity,$type,$short) -ForegroundColor $c
-                        if ($severity -eq 'HIGH' -and -not $NoBeep) { try { [console]::Beep(1000,130) } catch {} }
-                    }
-                } catch { Write-Warning "Event polling error for $($sub.Log): $($_.Exception.Message)" }
+            $batch=Receive-CcdcBatch -DataDirectory $data -Profile $profile
+            foreach ($r in $batch.Records) {
+                $color=if($r.Severity -eq 'HIGH'){'Red'}elseif($r.Severity -eq 'REVIEW'){'Yellow'}else{'Gray'}
+                Write-Host ("{0} [{1}] {2} {3} PID {4} {5}" -f $r.Time,$r.Severity,$r.Kind,$r.Image,$r.ProcessId,$r.CommandLine) -ForegroundColor $color
             }
-            # Snapshot established TCP sockets to catch currently connected clients, including inbound connections.
-            # This is polling, NOT guaranteed to catch short-lived connections; Sysmon 3 provides event history.
-            try {
-                $nowTcp = @{}
-                $tcp = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)
-                foreach ($conn in $tcp) {
-                    $key = "$($conn.LocalAddress):$($conn.LocalPort)|$($conn.RemoteAddress):$($conn.RemotePort)|$($conn.OwningProcess)"
-                    $nowTcp[$key] = $true
-                    if (-not $previousTcp.ContainsKey($key)) {
-                        $pname = '(exited)'
-                        try { $pname = (Get-Process -Id $conn.OwningProcess -ErrorAction Stop).ProcessName } catch {}
-                        Write-Host ("{0:HH:mm:ss} [LIVE TCP] {1}:{2} <-/-> {3}:{4} PID {5} ({6})" -f (Get-Date),$conn.LocalAddress,$conn.LocalPort,$conn.RemoteAddress,$conn.RemotePort,$conn.OwningProcess,$pname) -ForegroundColor Cyan
-                    }
-                }
-                $previousTcp = $nowTcp
-            } catch { Write-Warning "TCP snapshot error: $($_.Exception.Message)" }
-            Start-Sleep -Seconds $PollSeconds
+            $batch.Health | Where-Object {$_ -match 'ERROR|UNAVAILABLE|gap|RESET|backlog'} | ForEach-Object {Write-Warning $_}
+            Start-Sleep -Seconds ([Math]::Max(1,$PollSeconds))
         }
     }
 }

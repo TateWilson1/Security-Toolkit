@@ -1,11 +1,20 @@
 #requires -Version 5.1
 # CCDC Windows Server dashboard. Uses Sysmon + Windows Event Logs + live TCP snapshots.
 # Read-only: no automatic blocking or quarantine of suspicious commands.
+[CmdletBinding()]
+param(
+    [string]$DataDirectory = (Join-Path $env:ProgramData 'CCDC-BlueTeam\Evidence\Telemetry'),
+    [string]$ProfilePath = (Join-Path $env:ProgramData 'CCDC-BlueTeam\profile.json'),
+    [string]$SmokeTestReport
+)
 $ErrorActionPreference = 'Stop'
+if (-not (Test-Path $ProfilePath)) { $ProfilePath=Join-Path $PSScriptRoot 'profile.default.json' }
+Import-Module (Join-Path $PSScriptRoot 'Monitoring.psm1') -Force
+$profile=Read-CcdcProfile $ProfilePath
 $myPath = $MyInvocation.MyCommand.Path
 $p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -STA -File "'+$myPath+'"')
+    Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -STA -File "'+$myPath+'" -DataDirectory "'+$DataDirectory+'" -ProfilePath "'+$ProfilePath+'"')
     exit
 }
 Add-Type -AssemblyName System.Windows.Forms
@@ -84,7 +93,16 @@ function New-Tab([string]$label) {
 }
 $tEvent=New-Tab 'Process + Connection Events'
 $tTcp=New-Tab 'Live TCP Sessions'
+$tTree=New-Tab 'Process relationships'
+$tHealth=New-Tab 'Sources + Defender'
 $tNotes=New-Tab 'Scoring Safety'
+$tree=New-Object System.Windows.Forms.TreeView
+$tree.Dock='Fill';$tree.BackColor=$bg;$tree.ForeColor=$fg
+$tTree.Controls.Add($tree)
+$healthBox=New-Object System.Windows.Forms.TextBox
+$healthBox.Dock='Fill';$healthBox.Multiline=$true;$healthBox.ReadOnly=$true;$healthBox.ScrollBars='Both'
+$healthBox.BackColor=$bg;$healthBox.ForeColor=$fg
+$tHealth.Controls.Add($healthBox)
 function Set-Grid($g) {
     $g.Dock='Fill';$g.BackgroundColor=$bg;$g.GridColor=$surface
     $g.ReadOnly=$true;$g.AllowUserToAddRows=$false;$g.AllowUserToDeleteRows=$false
@@ -102,7 +120,7 @@ function Set-Grid($g) {
     $g.RowTemplate.Height=26
 }
 $split=New-Object System.Windows.Forms.SplitContainer
-$split.Dock='Fill';$split.Orientation='Horizontal';$split.SplitterDistance=450
+$split.Dock='Fill';$split.Orientation='Horizontal';$split.Size=[System.Drawing.Size]::new(1200,600);$split.SplitterDistance=390
 $tEvent.Controls.Add($split)
 $script:eventGrid=New-Object System.Windows.Forms.DataGridView
 Set-Grid $script:eventGrid
@@ -173,11 +191,11 @@ modifies firewall, DNS, SQL, or WinRM settings.
 
 Sysmon Event 1 = process creation (parent, command line)
 Sysmon Event 3 = network connection; event 5 = process exit
-Windows Security 4688 = fallback process create if Sysmon missing
+Windows Security 4688 = independent process audit (may duplicate Sysmon)
 Windows Security 4624/4625 = logon success/failure
 PowerShell Operational 4104 = script block content
 
-TCP tab: refreshes current established sessions every 2 seconds.
+TCP tab: refreshes current sockets after each background batch.
 Short connections may be missed in snapshot tab. Sysmon 3 event
 capture is the better history (not a raw packet recorder).
 
@@ -186,179 +204,140 @@ If its real-time protection is ACTIVE, it can quarantine malware
 that it recognizes. This GUI does not trigger quarantine itself.
 '@
 $tNotes.Controls.Add($instructions)
-function To-Map($event) {
-    $h=@{}
-    try{
-        [xml]$x=$event.ToXml()
-        foreach($n in @($x.Event.EventData.Data)){
-            if($n -and $n.Name){$h[[string]$n.Name]=[string]$n.'#text'}
-        }
-    }catch{}
-    return $h
-}
-function Value($map,[string]$name){
-    if($map.ContainsKey($name) -and $null -ne $map[$name]){return [string]$map[$name]}
-    return ''
-}
-function Add-Event($ev,$map,$stream) {
-    $kind='EVENT';$priority='INFO';$proc='';$parent='';$command='';$from='';$to='';$who=''
-    if($stream.Log -like '*Sysmon*'){
-        if($ev.Id -eq 1){
-            $kind='PROCESS';$proc=Value $map 'Image';$parent=Value $map 'ParentImage'
-            $command=Value $map 'CommandLine';$who=Value $map 'User'
-            if($proc -match '(?i)(powershell|pwsh|cmd|mshta|rundll32|regsvr32|certutil|wmic|wscript|cscript|schtasks)\.exe$'){$priority='REVIEW'}
-            if($parent -match '(?i)(wmiprvse|wsmprovhost)\.exe$'){$priority='REVIEW'}
-            if($parent -match '(?i)(w3wp|sqlservr)\.exe$' -and $proc -match '(?i)(powershell|pwsh|cmd|mshta|rundll32)\.exe$'){$priority='HIGH'}
-            if($command -match '(?i)(-encodedcommand|frombase64string|downloadstring)'){$priority='REVIEW'}
-        }elseif($ev.Id -eq 3){
-            $kind='CONNECTION';$proc=Value $map 'Image';$who=Value $map 'User'
-            $from=(Value $map 'SourceIp')+':'+(Value $map 'SourcePort')
-            $to=(Value $map 'DestinationIp')+':'+(Value $map 'DestinationPort')
-            if($proc -match '(?i)(powershell|pwsh|cmd|mshta|rundll32)\.exe$'){$priority='REVIEW'}
-        }elseif($ev.Id -eq 5){
-            $kind='EXIT';$proc=Value $map 'Image';$who=Value $map 'User'
-        }else{return}
-    }elseif($stream.Log -eq 'Security'){
-        if($ev.Id -eq 4688){
-            if($script:hasSysmon){return}
-            $kind='PROCESS';$proc=Value $map 'NewProcessName'
-            $parent=Value $map 'ParentProcessName'
-            $command=Value $map 'CommandLine';$who=Value $map 'SubjectUserName'
-            if($proc -match '(?i)(powershell|pwsh|cmd|mshta|certutil|wmic)\.exe$'){$priority='REVIEW'}
-        }elseif($ev.Id -eq 4624 -or $ev.Id -eq 4625){
-            $lt=Value $map 'LogonType'
-            if($ev.Id -eq 4624 -and $lt -notin @('2','3','10')){return}
-            $kind=if($ev.Id -eq 4624){"LOGIN $lt"}else{'FAILED LOGIN'}
-            $who=Value $map 'TargetUserName';$from=Value $map 'IpAddress'
-            if($ev.Id -eq 4625){$priority='REVIEW'}
-        }else{
-            $kind='ACCOUNT CHANGE';$priority='HIGH'
-            $who=Value $map 'TargetUserName'
-        }
-    }elseif($ev.Id -eq 4104){
-        $kind='POWERSHELL'
-        $proc='Script block';$command=Value $map 'ScriptBlockText';$priority='REVIEW'
-    }else{return}
-    $script:count++
-    if($priority -ne 'INFO'){$script:alertCount++}
-    $script:counters.Text="Events $($script:count)   |   Alerts $($script:alertCount)"
-    if($script:onlyAlerts -and $priority -eq 'INFO'){return}
-    $detailLines=@(
-        'HOST: '+$env:COMPUTERNAME
-        'TIMESTAMP: '+$ev.TimeCreated.ToString('o')
-        'EVENT SOURCE: '+$stream.Log
-        'EVENT ID: '+$ev.Id
-        'EVENT RECORD ID: '+$ev.RecordId
-        'PRIORITY: '+$priority+' (heuristic only)'
-        'PROCESS: '+$proc
-        'PARENT: '+$parent
-        'USER: '+$who
-        'SOURCE: '+$from
-        'DESTINATION: '+$to
-        'PROCESS GUID: '+(Value $map 'ProcessGuid')
-        'PROCESS ID: '+(Value $map 'ProcessId')
-        'PARENT COMMAND: '+(Value $map 'ParentCommandLine')
-        'COMMAND: '+$command
-        ''
-        'Original record remains in the Windows event log.'
-    )
-    $display=($proc -split '\\')[-1]
-    if($display.Length -gt 90){$display=$display.Substring(0,90)}
-    $parentName=($parent -split '\\')[-1]
-    $row=[object[]]@($ev.TimeCreated.ToString('HH:mm:ss'),$priority,$kind,$display,$parentName,$from,$to,$who)
-    $index=$script:eventGrid.Rows.Add($row)
-    $script:eventGrid.Rows[$index].Tag=$detailLines -join [Environment]::NewLine
-    if($priority -eq 'HIGH'){
-        $script:eventGrid.Rows[$index].DefaultCellStyle.ForeColor=$red
-        try{[Console]::Beep(880,110)}catch{}
-    }elseif($priority -eq 'REVIEW'){
-        $script:eventGrid.Rows[$index].DefaultCellStyle.ForeColor=$amber
+# Search operates on the most recent 1200 retained rows, including replay at startup.
+$search=New-Object System.Windows.Forms.TextBox
+$search.Dock='Top';$search.BackColor=$surface;$search.ForeColor=$fg
+$tEvent.Controls.Add($search);$search.BringToFront()
+$search.AccessibleName='Search recent events by command, address, user or process'
+$script:recent=New-Object 'System.Collections.Generic.List[object]'
+$script:seen=New-Object 'System.Collections.Generic.HashSet[string]'
+function Show-Recent {
+    $script:eventGrid.Rows.Clear()
+    $needle=$search.Text
+    foreach ($r in $script:recent) {
+        if ($script:onlyAlerts -and $r.Severity -eq 'INFO') { continue }
+        $details=ConvertTo-Json -InputObject $r -Depth 8
+        if ($needle -and $details.IndexOf($needle,[StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+        $index=$script:eventGrid.Rows.Add([object[]]@(
+            ([datetimeoffset]::Parse($r.Time).ToLocalTime().ToString('MM-dd HH:mm:ss')),
+            $r.Severity,$r.Kind,($r.Image -split '\\')[-1],($r.ParentImage -split '\\')[-1],
+            ('['+$r.SourceIp+']:'+$r.SourcePort),('['+$r.DestinationIp+']:'+$r.DestinationPort),$r.User))
+        $row=$script:eventGrid.Rows[$index];$row.Tag=$details
+        if ($r.Severity -eq 'HIGH') { $row.DefaultCellStyle.ForeColor=$red }
+        elseif ($r.Severity -eq 'REVIEW') { $row.DefaultCellStyle.ForeColor=$amber }
     }
-    if($script:eventGrid.Rows.Count -gt 1200){$script:eventGrid.Rows.RemoveAt(0)}
-    if($script:eventGrid.Rows.Count -gt 0){
-        try{$script:eventGrid.FirstDisplayedScrollingRowIndex=$script:eventGrid.Rows.Count-1}catch{}
+    # GUIDs distinguish process lifetimes despite PID reuse. Missing parents stay explicit.
+    $tree.BeginUpdate();$tree.Nodes.Clear();$nodes=@{}
+    foreach ($r in $script:recent) {
+        if ($r.Kind -ne 'PROCESS' -or -not $r.ProcessGuid -or $nodes.ContainsKey($r.ProcessGuid)) { continue }
+        $node=New-Object System.Windows.Forms.TreeNode
+        $node.Text=($r.Image+' [PID '+$r.ProcessId+'] '+$r.Time)
+        $node.Tag=$r;$nodes[$r.ProcessGuid]=$node
     }
-}
-function Init-Streams {
-    $script:streams=@()
-    foreach($spec in @(
-        @{Log='Microsoft-Windows-Sysmon/Operational';Ids=@(1,3,5)},
-        @{Log='Security';Ids=@(4624,4625,4688,4720,4722,4725,4728,4732,4738,4740,1102)},
-        @{Log='Microsoft-Windows-PowerShell/Operational';Ids=@(4104)}
-    )){
-        try{
-            $info=Get-WinEvent -ListLog $spec.Log -ErrorAction Stop
-            if(-not $info.IsEnabled){continue}
-            $head=Get-WinEvent -LogName $spec.Log -MaxEvents 1 -ErrorAction SilentlyContinue
-            $last=[long]0
-            if($head){$last=[long]$head.RecordId}
-            $script:streams += [pscustomobject]@{Log=$spec.Log;Ids=$spec.Ids;Last=$last}
-        }catch{}
+    foreach ($node in @($nodes.Values)) {
+        $parentGuid=$node.Tag.ParentProcessGuid
+        # Prevent malformed/custom telemetry from building cyclic Trees.
+        if ($parentGuid -and $nodes.ContainsKey($parentGuid) -and
+            [datetimeoffset]::Parse($nodes[$parentGuid].Tag.Time) -lt [datetimeoffset]::Parse($node.Tag.Time)) {
+            [void]$nodes[$parentGuid].Nodes.Add($node)
+        } else { $node.Text+=' (parent outside retained view or unavailable)';[void]$tree.Nodes.Add($node) }
     }
-    $script:hasSysmon=(@($script:streams | Where-Object {$_.Log -like '*Sysmon*'}).Count -gt 0)
-    $sysState=if($script:hasSysmon){'ON'}else{'MISSING: process/network event coverage limited'}
-    $script:status.Text="HOST $env:COMPUTERNAME  |  ROLE $script:role  |  Sysmon $sysState  |  No automatic blocks"
+    $tree.EndUpdate()
 }
-function Poll-EventStreams {
-    foreach($stream in $script:streams){
-        try{
-            $ids=($stream.Ids | ForEach-Object {"EventID=$_"}) -join ' or '
-            $xp="*[System[(EventRecordID > $($stream.Last)) and ($ids)]]"
-            $events=@(Get-WinEvent -LogName $stream.Log -FilterXPath $xp -MaxEvents 400 -ErrorAction SilentlyContinue | Sort-Object RecordId)
-            if($events.Count -ge 400){$script:status.Text="High event volume! Only latest 400 events per poll for $($stream.Log); use Export or SIEM for full history."}
-            foreach($ev in $events){
-                if([long]$ev.RecordId -le $stream.Last){continue}
-                $stream.Last=[long]$ev.RecordId
-                Add-Event $ev (To-Map $ev) $stream
-            }
-        }catch{$script:status.Text="Event polling issue for $($stream.Log): $($_.Exception.Message)"}
-    }
-}
-function Poll-Tcp {
-    try{
-        $connections=@(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Select-Object -First 600)
-        $script:tcp.Rows.Clear()
-        $names=@{}
-        foreach($c in $connections){
-            $pidText=[string]$c.OwningProcess
-            if(-not $names.ContainsKey($pidText)){
-                $p=Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
-                $names[$pidText]=if($p){$p.ProcessName}else{'(exited)'}
-            }
-            [void]$script:tcp.Rows.Add([object[]]@(
-                "$($c.LocalAddress):$($c.LocalPort)",
-                "$($c.RemoteAddress):$($c.RemotePort)",
-                $pidText,$names[$pidText],[string]$c.State))
-        }
-    }catch{$script:status.Text="TCP refresh issue: $($_.Exception.Message)"}
-}
+$tree.Add_AfterSelect({ $script:detail.Text=ConvertTo-Json -InputObject $tree.SelectedNode.Tag -Depth 8 })
+$tree.Add_NodeMouseDoubleClick({
+    [void][System.Windows.Forms.MessageBox]::Show((ConvertTo-Json -InputObject $tree.SelectedNode.Tag -Depth 8),'Process details')
+})
+$search.Add_TextChanged({Show-Recent})
 function Run-Mode([string]$mode){
     $helper=Join-Path $script:base 'CCDC-BlueTeam.ps1'
-    $args='-NoExit -NoProfile -ExecutionPolicy Bypass -File "'+$helper+'" -Mode '+$mode+' -Role '+$script:role+' -OutputDir "'+(Join-Path $script:base 'Evidence')+'"'
-    Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $args
+    $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$helper+'" -Mode '+$mode+' -Role '+$script:role+' -OutputDir "'+(Join-Path $env:ProgramData 'CCDC-BlueTeam\Evidence')+'"'
+    Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments
 }
 $bBaseline.Add_Click({Run-Mode 'Baseline'})
 $bCheck.Add_Click({Run-Mode 'Check'})
 $bExport.Add_Click({Run-Mode 'Export'})
-$bDefender.Add_Click({
-    $command='if(Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue){Get-MpComputerStatus | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureLastUpdated | Format-List; Get-MpThreatDetection | Select-Object -First 20 | Format-List}else{Write-Host ''Defender status unavailable''}'
-    Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList ('-NoExit -NoProfile -Command "'+$command+'"')
-})
+$bDefender.Add_Click({$tabs.SelectedTab=$tHealth})
 $bPause.Add_Click({
     $script:paused=-not $script:paused
     $bPause.Text=if($script:paused){'Resume view'}else{'Pause live view'}
+    if (-not $script:paused) { Show-Recent }
 })
 $bAlerts.Add_Click({
     $script:onlyAlerts=-not $script:onlyAlerts
     $bAlerts.Text=if($script:onlyAlerts){'Alerts only: ON'}else{'Alerts only: OFF'}
+    Show-Recent
 })
+# All Windows queries and disk writes execute in a dedicated runspace. UI never waits
+# synchronously for a query. A single outstanding batch bounds memory under load.
+$worker=[powershell]::Create()
+$script:pending=$null;$script:first=$true;$script:batchCount=0;$script:lastHealth=@();$script:smokeStart=Get-Date
+$collect={
+    param($base,$data,$profilePath,$first)
+    $ErrorActionPreference='Stop'
+    Import-Module (Join-Path $base 'Monitoring.psm1')
+    $profile=Read-CcdcProfile $profilePath
+    $history=@();if($first){$history=@(Get-CcdcHistory $data)}
+    $batch=Receive-CcdcBatch -DataDirectory $data -Profile $profile
+    $tcpRows=@();$extra=@()
+    try {
+        $names=@{};foreach($p in Get-Process){$names[[string]$p.Id]=$p.ProcessName}
+        $tcpRows=@(Get-NetTCPConnection -ErrorAction Stop | Select-Object -First 2000 | ForEach-Object {
+            [pscustomobject]@{Local=('['+$_.LocalAddress+']:'+$_.LocalPort);Remote=('['+$_.RemoteAddress+']:'+$_.RemotePort)
+                ProcessId=$_.OwningProcess;Process=$names[[string]$_.OwningProcess];State=[string]$_.State}
+        })
+        $extra+='TCP snapshot: '+$tcpRows.Count+' rows (display cap 2000; short connections may be absent)'
+    } catch {$extra+='TCP unavailable: '+$_.Exception.Message}
+    # Query Defender once every 30 seconds in the persistent runspace.
+    if (-not (Get-Variable defenderTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $defenderTime.AddSeconds(30)) {
+        $defenderTime=Get-Date
+        try {$defender=Get-MpComputerStatus -ErrorAction Stop | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureLastUpdated | Format-List | Out-String}
+        catch {$defender='Defender unavailable: '+$_.Exception.Message}
+    }
+    [pscustomobject]@{Records=@($history)+@($batch.Records);Health=@($batch.Health)+$extra;Tcp=$tcpRows;Defender=$defender}
+}
 $timer=New-Object System.Windows.Forms.Timer
 $timer.Interval=2000
 $timer.Add_Tick({
-    if($script:busy -or $script:paused){return}
-    $script:busy=$true
-    try{Poll-EventStreams;Poll-Tcp}finally{$script:busy=$false}
+    if ($script:pending) {
+        if (-not $script:pending.IsCompleted) { return }
+        try {
+            $result=@($worker.EndInvoke($script:pending))
+            if ($worker.HadErrors) { throw ($worker.Streams.Error | Out-String) }
+            $batch=$result[-1];$script:batchCount++;$script:lastHealth=@($batch.Health)
+            foreach ($r in $batch.Records) {
+                if (-not $script:seen.Add($r.Key)) { continue }
+                $script:recent.Add($r);$script:count++
+                if ($r.Severity -ne 'INFO') {$script:alertCount++}
+                if ($script:recent.Count -gt 1200) {
+                    [void]$script:seen.Remove($script:recent[0].Key);$script:recent.RemoveAt(0)
+                }
+            }
+            $script:counters.Text="Events $script:count | Alerts $script:alertCount"
+            $healthBox.Text=($batch.Health -join [Environment]::NewLine)+[Environment]::NewLine+$batch.Defender
+            $script:status.Text='Collection active | Recent 1200 rows | UTC evidence, local display | Detection only'
+            if (@($batch.Health | Where-Object {$_ -match 'ERROR|UNAVAILABLE|gap|RESET|backlog'}).Count) {
+                $script:status.Text='Coverage warning / backlog - see Sources + Defender | Detection only'
+            }
+            if (-not $script:paused) {
+                Show-Recent
+                $script:tcp.Rows.Clear()
+                foreach($c in $batch.Tcp){[void]$script:tcp.Rows.Add([object[]]@($c.Local,$c.Remote,[string]$c.ProcessId,$c.Process,$c.State))}
+            }
+        } catch { $script:status.Text='COLLECTION ERROR: '+$_.Exception.Message }
+        $script:pending=$null
+    }
+    if ($SmokeTestReport -and ((Get-Date)-$script:smokeStart).TotalSeconds -ge 20) {
+        [pscustomobject]@{Batches=$script:batchCount;Events=$script:count;Health=$script:lastHealth;Status=$script:status.Text;Rows=$script:eventGrid.Rows.Count} |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $SmokeTestReport -Encoding UTF8
+        $bitmap=New-Object System.Drawing.Bitmap($form.Width,$form.Height)
+        try {$form.DrawToBitmap($bitmap,$form.ClientRectangle);$bitmap.Save(($SmokeTestReport+'.png'))} finally {$bitmap.Dispose()}
+        $form.Close();return
+    }
+    $worker.Commands.Clear();$worker.Streams.Error.Clear()
+    [void]$worker.AddScript($collect.ToString(),$false).AddArgument($script:base).AddArgument($DataDirectory).AddArgument($ProfilePath).AddArgument($script:first)
+    $script:pending=$worker.BeginInvoke();$script:first=$false
 })
-$form.Add_Shown({Init-Streams;Poll-Tcp;$timer.Start()})
-$form.Add_FormClosing({$timer.Stop();$timer.Dispose()})
+$form.Add_Shown({$timer.Start()})
+$form.Add_FormClosing({$timer.Stop();$timer.Dispose();$worker.Stop();$worker.Dispose()})
 [void]$form.ShowDialog()

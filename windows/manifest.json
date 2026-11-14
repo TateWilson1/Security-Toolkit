@@ -1,0 +1,11 @@
+{
+  "CCDC-BlueTeam.ps1": "bf80c437f85054b15e57f8a6c15b5bfa40b04fc073328a8258d76e730b5b8b2f",
+  "Dashboard.ps1": "18df2438219f8bea69e110cb73f6dbcf536dc09354b552814794d02fd05f08ce",
+  "Monitoring.psm1": "696e59a6e947ae28249e70a8d04f6efd55c3bcfc978473497c70945e2e4c381e",
+  "ccdc-sysmon.xml": "92e8b2f35b840353bac42b2d7f57792ccfbb6d57d8d78c867064aa5b640ea841",
+  "profile.default.json": "5a24fd6c43fc97c3c0696a91aa2d0e7f3c68af4e97f804811d027ebbac4f9a31",
+  "README.md": "dd847743edabf1d3141f21d3aa4955552e8170a0921bee3ac88c2053a5e1539c",
+  "CCDC-Playbook.md": "b50c1f89ce672d27cb16d2953c79b86b509464a7bd4c7d4465e1901e7787fa38",
+  "Install.ps1": "e83a7cfc28b33e89addc93efcac29d4da76507501b67961b586dc3fc164b69df",
+  "TESTING.md": "a8b4adca44ccae2eec08dfb86eb9343fda9b81d54dd1a41a3ebfe4c89e22c846"
+}

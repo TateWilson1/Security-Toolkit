@@ -1,0 +1,83 @@
+{
+  "SchemaVersion": 1,
+  "Name": "Generic CCDC - tune for the current packet",
+  "ServerRole": "Other",
+  "KnownManagementAddresses": [],
+  "RequiredPorts": [
+    53,
+    80,
+    443,
+    445,
+    1433,
+    3389,
+    5985,
+    5986
+  ],
+  "ProtectedServices": [
+    "NTDS",
+    "DNS",
+    "WinRM",
+    "MSSQLSERVER",
+    "LanmanServer",
+    "TermService",
+    "W3SVC"
+  ],
+  "Rules": [
+    {
+      "Id": "shell",
+      "Enabled": true,
+      "Kinds": [
+        "PROCESS"
+      ],
+      "Field": "Image",
+      "Pattern": "\\\\(powershell|pwsh|cmd|mshta|wmic|certutil|rundll32)\\.exe$",
+      "Severity": "REVIEW",
+      "Description": "Command interpreter or administrative utility: review command and ancestry"
+    },
+    {
+      "Id": "remote-parent",
+      "Enabled": true,
+      "Kinds": [
+        "PROCESS"
+      ],
+      "Field": "ParentImage",
+      "Pattern": "\\\\(wsmprovhost|wmiprvse)\\.exe$",
+      "Severity": "REVIEW",
+      "Description": "Remote administration ancestry; may be approved WinRM/WMI or scoring"
+    },
+    {
+      "Id": "service-child",
+      "Enabled": true,
+      "Kinds": [
+        "PROCESS"
+      ],
+      "Field": "ParentImage",
+      "Pattern": "\\\\(w3wp|sqlservr)\\.exe$",
+      "Severity": "HIGH",
+      "Description": "Web or SQL worker child: verify application behavior"
+    },
+    {
+      "Id": "script-pattern",
+      "Enabled": true,
+      "Kinds": [
+        "PROCESS",
+        "POWERSHELL"
+      ],
+      "Field": "CommandLine",
+      "Pattern": "(-enc(odedcommand)?\\b|frombase64string|downloadstring|invoke-expression|[as]et-mppreference)",
+      "Severity": "REVIEW",
+      "Description": "Execution or Defender configuration pattern: inspect full content"
+    },
+    {
+      "Id": "shell-network",
+      "Enabled": true,
+      "Kinds": [
+        "CONNECTION"
+      ],
+      "Field": "Image",
+      "Pattern": "\\\\(powershell|pwsh|cmd|mshta|rundll32)\\.exe$",
+      "Severity": "REVIEW",
+      "Description": "Network activity by an interpreter or utility"
+    }
+  ]
+}

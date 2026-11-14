@@ -1,0 +1,110 @@
+#requires -Version 5.1
+# ONLY an explicitly disposable lab/hosted runner. Never run on competition infrastructure.
+[CmdletBinding()]
+param([Parameter(Mandatory=$true)][string]$Revision,[switch]$AllowLabChanges,[string]$ResultsDirectory=(Join-Path $PSScriptRoot 'results'))
+$ErrorActionPreference='Stop'
+if(-not $AllowLabChanges){throw 'Requires -AllowLabChanges in a disposable Windows Server VM. Installs Sysmon and enables auditing.'}
+$null=New-Item -ItemType Directory -Path $ResultsDirectory -Force
+$ResultsDirectory=(Resolve-Path $ResultsDirectory).Path
+$results=New-Object 'System.Collections.Generic.List[object]'
+function Test-Step([string]$Name,[scriptblock]$Body) {
+    try { $detail=& $Body; $results.Add([pscustomobject]@{Test=$Name;Status='PASS';Detail=($detail | Out-String)}) }
+    catch { $results.Add([pscustomobject]@{Test=$Name;Status='FAIL';Detail=$_.Exception.Message});Write-Warning "$Name : $_" }
+}
+$root=Join-Path $env:ProgramData 'CCDC-BlueTeam'
+$start=[datetime]::UtcNow
+$marker='CCDC-LAB-'+[guid]::NewGuid().ToString('N')
+try {
+    Test-Step 'Clean installation' {
+        if(Test-Path $root){throw 'Not a clean lab: installation directory already exists. Refusing to remove it.'}
+        & (Join-Path $PSScriptRoot '..\Install.ps1') -Revision $Revision -NoLaunch
+        if(-not (Test-Path (Join-Path $root 'current-version.txt'))){throw 'Activation missing'}
+    }
+    $installed=(Get-Content (Join-Path $root 'current-version.txt') -Raw).Trim()
+    $evidence=Join-Path $root 'Evidence'
+    $sentinel=Join-Path $evidence 'reinstall-sentinel.txt';$marker | Set-Content $sentinel
+    Test-Step 'Second installation preserves evidence and profile' {
+        $before=(Get-FileHash (Join-Path $root 'profile.json')).Hash
+        & (Join-Path $PSScriptRoot '..\Install.ps1') -Revision $Revision -NoLaunch
+        if((Get-Content $sentinel) -ne $marker){throw 'Evidence lost'}
+        if((Get-FileHash (Join-Path $root 'profile.json')).Hash -ne $before){throw 'Profile changed'}
+    }
+    $installed=(Get-Content (Join-Path $root 'current-version.txt') -Raw).Trim()
+    Import-Module (Join-Path $installed 'Monitoring.psm1') -Force
+    $profile=Read-CcdcProfile (Join-Path $root 'profile.json')
+    $data=Join-Path $evidence 'Telemetry'
+    Test-Step 'Sysmon service and process rules' {
+        if(-not (Get-Service Sysmon64 -ErrorAction Stop | Where-Object Status -eq 'Running')){throw 'Sysmon not running'}
+        $global:labParent=Start-Process powershell.exe -ArgumentList ('-NoProfile -Command "cmd /c echo '+$marker+'; Start-Sleep -Seconds 1"') -PassThru -Wait
+        Start-Process cmd.exe -ArgumentList ('/c echo '+$marker+'-short') -Wait
+        Start-Sleep -Seconds 4
+        $global:labEvents=@(Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational';Id=1;StartTime=$start.ToLocalTime()} | ForEach-Object {ConvertTo-CcdcEvent $_.ToXml() $profile})
+        if(-not @($labEvents | Where-Object CommandLine -like "*$marker*").Count){throw 'Test process not captured'}
+    }
+    Test-Step 'Short CMD, parent GUID, command line, UTC timestamp, alert' {
+        $children=@($labEvents | Where-Object {$_.Image -like '*\cmd.exe' -and $_.CommandLine -like "*$marker*"})
+        if(-not $children.Count){throw 'Short-lived CMD missing'}
+        if(-not @($children | Where-Object ParentProcessGuid).Count){throw 'Ancestry missing'}
+        if(-not @($labEvents | Where-Object {$_.CommandLine -like "*$marker*" -and $_.Severity -eq 'REVIEW'}).Count){throw 'Alert missing'}
+        foreach($r in $children){if([datetimeoffset]::Parse($r.Time).UtcDateTime -lt $start){throw 'Timestamp predates test'}}
+    }
+    Test-Step 'Process termination events' {
+        $exits=@(Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational';Id=5;StartTime=$start.ToLocalTime()})
+        if(-not $exits.Count){throw 'No exit records'}
+    }
+    Test-Step 'Localhost TCP snapshot and short connection probe' {
+        $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0);$listener.Start()
+        try {
+            $port=$listener.LocalEndpoint.Port
+            $client=New-Object Net.Sockets.TcpClient
+            try {
+                $client.Connect('127.0.0.1',$port);$server=$listener.AcceptTcpClient()
+                try {if(-not @(Get-NetTCPConnection -LocalPort $port -State Established).Count){throw 'Live socket missing'}} finally {$server.Dispose()}
+            } finally {$client.Dispose()}
+            $client=New-Object Net.Sockets.TcpClient
+            try {$client.Connect('127.0.0.1',$port);$server=$listener.AcceptTcpClient();$server.Dispose()} finally {$client.Dispose()}
+        } finally {$listener.Stop()}
+        Start-Sleep -Seconds 4
+        $network=@(Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational';Id=3;StartTime=$start.ToLocalTime()} -ErrorAction SilentlyContinue | ForEach-Object {ConvertTo-CcdcEvent $_.ToXml() $profile} | Where-Object DestinationPort -eq ([string]$port))
+        if(-not $network.Count){throw 'Localhost sockets worked, but Sysmon did not emit the short-connection event. Coverage limitation; investigate in lab.'}
+        $network | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $ResultsDirectory 'network.json')
+    }
+    Test-Step 'Durable collection and restart' {
+        1..12 | ForEach-Object {$null=Receive-CcdcBatch $data $profile}
+        $history=@(Get-CcdcHistory $data 20000)
+        if(-not @($history | Where-Object CommandLine -like "*$marker*").Count){throw 'Process absent from durable history'}
+        Remove-Module Monitoring
+        Import-Module (Join-Path $installed 'Monitoring.psm1')
+        if(-not @(Get-CcdcHistory $data).Count){throw 'History missing after reload'}
+    }
+    Test-Step 'GUI startup, background collection, screenshot' {
+        $report=Join-Path $ResultsDirectory 'gui.json'
+        $process=Start-Process powershell.exe -ArgumentList ('-NoProfile -STA -ExecutionPolicy Bypass -File "'+(Join-Path $installed 'Dashboard.ps1')+'" -SmokeTestReport "'+$report+'"') -PassThru -RedirectStandardError (Join-Path $ResultsDirectory 'gui-errors.txt')
+        if(-not $process.WaitForExit(60000)){Stop-Process -Id $process.Id;throw 'GUI test timed out'}
+        if(-not (Test-Path $report)){throw 'GUI produced no report; inspect gui-errors.txt'}
+        $gui=Get-Content $report -Raw | ConvertFrom-Json
+        if($gui.Batches -lt 1 -or $gui.Events -lt 1){throw 'GUI did not collect/replay events'}
+    }
+    Test-Step 'Evidence EVTX and hashes' {
+        & (Join-Path $installed 'CCDC-BlueTeam.ps1') -Mode Export -OutputDir $evidence
+        if(-not @(Get-ChildItem $evidence -Recurse -Filter '*.evtx').Count){throw 'EVTX missing'}
+    }
+    Test-Step 'Defender status availability' {
+        Get-MpComputerStatus -ErrorAction Stop | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled | ConvertTo-Json | Set-Content (Join-Path $ResultsDirectory 'defender.json')
+    }
+    Test-Step 'Resource sample 30 seconds (not a soak test)' {
+        $report=Join-Path $ResultsDirectory 'restart-gui.json'
+        $process=Start-Process powershell.exe -ArgumentList ('-NoProfile -STA -ExecutionPolicy Bypass -File "'+(Join-Path $installed 'Dashboard.ps1')+'" -SmokeTestReport "'+$report+'"') -PassThru
+        $samples=@(1..6 | ForEach-Object {Start-Sleep -Seconds 5;$process.Refresh();if(-not $process.HasExited){[pscustomobject]@{Time=[datetime]::UtcNow;WorkingSet=$process.WorkingSet64;CPUSeconds=$process.TotalProcessorTime.TotalSeconds;Handles=$process.HandleCount}}})
+        $samples | ConvertTo-Json | Set-Content (Join-Path $ResultsDirectory 'resources.json')
+        if(-not $samples.Count){throw 'No running GUI samples'}
+        if(-not $process.HasExited){Stop-Process -Id $process.Id;throw 'Restart GUI did not finish its smoke test'}
+        if(-not (Test-Path $report)){throw 'Restart GUI failed'}
+    }
+} finally {
+    $results | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $ResultsDirectory 'results.json') -Encoding UTF8
+    Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber | ConvertTo-Json | Set-Content (Join-Path $ResultsDirectory 'os.json')
+    if(Test-Path $root){Copy-Item (Join-Path $root 'install-*.log') $ResultsDirectory -ErrorAction SilentlyContinue}
+    $results | Format-Table Test,Status -AutoSize
+}
+if(@($results | Where-Object Status -eq 'FAIL').Count){throw 'Integration failures; see results.json'}
