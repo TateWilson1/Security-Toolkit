@@ -1,0 +1,37 @@
+name: Verify CCDC Windows Scripts
+on:
+  push:
+    paths:
+      - "windows/**"
+      - ".github/workflows/ccdc-verify.yml"
+  pull_request:
+    paths:
+      - "windows/**"
+      - ".github/workflows/ccdc-verify.yml"
+jobs:
+  validate:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $scripts = Get-ChildItem -Path windows -Filter *.ps1 -File
+          foreach ($file in $scripts) {
+            Write-Host "Parsing $($file.FullName)"
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              foreach ($e in $errors) { Write-Error "$($file.Name): $($e.Message) at $($e.Extent.StartLineNumber)" }
+              throw "Invalid PowerShell syntax in $($file.Name)"
+            }
+          }
+      - name: Validate Sysmon XML
+        shell: powershell
+        run: |
+          [xml]$config = Get-Content windows/ccdc-sysmon.xml -Raw
+          if ($config.Sysmon.EventFiltering.NetworkConnect -eq $null) {
+            throw "Sysmon connection logging configuration missing"
+          }
+          Write-Host "Sysmon XML well-formed with NetworkConnect rules."

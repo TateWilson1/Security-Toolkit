@@ -8,7 +8,7 @@ This repository is intentionally scoped as a learning and portfolio toolkit. It 
 
 | Area | Item | Purpose |
 | --- | --- | --- |
-| Windows | `windows/windows-posture-check.ps1` | Collect firewall, local admin, hotfix, and service posture signals for authorized review. |
+| Windows | [`windows/`](windows/README.md) | One-command CCDC Windows Server blue-team dashboard: Sysmon processes, live connections, PowerShell events and incident evidence. |
 | Linux | `linux/ssh-hardening-checklist.md` | Checklist for reviewing SSH exposure and baseline hardening. |
 | M365 / Entra | `m365/access-review-checklist.md` | Practical identity and access review checklist aligned with SC-300 study. |
 | GRC | `grc/risk-register-template.md` | Lightweight risk register structure with scoring and remediation fields. |
@@ -30,3 +30,13 @@ Tools and notes here are for authorized lab, learning, and defensive assessment 
 - TabletopForge: https://github.com/TateWilson1/TabletopForge
 - Vulnerability Scanner: https://github.com/TateWilson1/Vulnerability_Scanner
 - GRC Risk Assessment: https://github.com/TateWilson1/GRC-Governance-Risk-and-Compliance-
+
+## CCDC Windows live monitoring
+
+On an authorized Windows Server (elevated Windows PowerShell 5.1):
+
+```powershell
+irm https://raw.githubusercontent.com/TateWilson1/Security-Toolkit/main/windows/Install.ps1 | iex
+```
+
+Review [the Windows installer and scoring-safety guide](windows/README.md) before using on a scored service. Existing Linux, GRC, and M365 toolkit areas are unchanged.

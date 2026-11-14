@@ -1,0 +1,10 @@
+<Sysmon schemaversion="4.90">
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <EventFiltering>
+    <!-- Log all process creations, network connections and exits for CCDC visibility. -->
+    <!-- High-volume on domain controllers. Keep event logs sufficiently large. -->
+    <ProcessCreate onmatch="exclude" />
+    <NetworkConnect onmatch="exclude" />
+    <ProcessTerminate onmatch="exclude" />
+  </EventFiltering>
+</Sysmon>
