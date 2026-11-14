@@ -127,6 +127,11 @@ function Receive-CcdcBatchCore {
                 foreach ($r in $rows) { $records.Add($r) }
                 $state[$source.Log]=[long]$rows[-1].RecordId
             }
+            if ($batch.Count -lt $Limit) {
+                # No remaining matching records through the observed head. Avoid rescanning
+                # unrelated Security records indefinitely when selected events are sparse.
+                $state[$source.Log]=[Math]::Max($headId, [long]$(if($state.ContainsKey($source.Log)){$state[$source.Log]}else{0}))
+            }
             if ($batch.Count -eq $Limit) { $health.Add($source.Log+': backlog, draining oldest first') }
             else { $health.Add($source.Log+': available') }
         } catch { $health.Add($source.Log+': UNAVAILABLE/ERROR: '+$_.Exception.Message) }
@@ -136,11 +141,12 @@ function Receive-CcdcBatchCore {
     Move-Item -LiteralPath $temporary -Destination $checkpoint -Force
     [pscustomobject]@{Records=$records.ToArray(); Health=$health.ToArray()}
 }
-function Get-CcdcHistory([string]$DataDirectory, [int]$Limit=1200) {
+function Get-CcdcHistory([string]$DataDirectory, [int]$Limit=1200, [string]$Query) {
     # Bound memory; full journal remains searchable using PowerShell or external tools.
     $queue=New-Object 'System.Collections.Generic.Queue[object]'
     foreach ($file in Get-ChildItem -LiteralPath $DataDirectory -Filter 'events-*.jsonl' -ErrorAction SilentlyContinue | Sort-Object Name) {
         foreach ($line in [IO.File]::ReadLines($file.FullName)) {
+            if ($Query -and $line.IndexOf($Query,[StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
             try { $queue.Enqueue(($line | ConvertFrom-Json)) } catch { Write-Warning "Invalid journal row in $($file.Name)" }
             if ($queue.Count -gt $Limit) { $null=$queue.Dequeue() }
         }

@@ -27,13 +27,10 @@ try {
     if($c.DomainRole -ge 4){$script:role='AD'}
     elseif(Get-Service MSSQLSERVER -ErrorAction SilentlyContinue){$script:role='MSSQL'}
 } catch {}
-$script:streams = @()
-$script:busy = $false
 $script:paused = $false
 $script:onlyAlerts = $false
 $script:count = 0
 $script:alertCount = 0
-$script:hasSysmon = $false
 $bg = [System.Drawing.Color]::FromArgb(15,23,42)
 $surface = [System.Drawing.Color]::FromArgb(30,41,59)
 $fg = [System.Drawing.Color]::FromArgb(226,232,240)
@@ -93,6 +90,21 @@ function New-Tab([string]$label) {
 }
 $tEvent=New-Tab 'Process + Connection Events'
 $tTcp=New-Tab 'Live TCP Sessions'
+$tArchive=New-Tab 'Search archive'
+$archiveSearch=New-Object System.Windows.Forms.TextBox
+$archiveSearch.Dock='Top';$archiveSearch.AccessibleName='Search complete JSONL archive (literal JSON text)'
+$archiveButton=New-Object System.Windows.Forms.Button
+$archiveButton.Dock='Top';$archiveButton.Text='Search all recorded history (latest 1200 matches)'
+$archiveGrid=New-Object System.Windows.Forms.DataGridView
+$archiveGrid.Dock='Fill';$archiveGrid.ReadOnly=$true;$archiveGrid.AllowUserToAddRows=$false
+$archiveGrid.AutoSizeColumnsMode='Fill';$archiveGrid.RowHeadersVisible=$false
+foreach($name in @('UTC','Severity','Kind','Image','Command','Source','Destination')){[void]$archiveGrid.Columns.Add($name,$name)}
+$tArchive.Controls.Add($archiveGrid);$tArchive.Controls.Add($archiveButton);$tArchive.Controls.Add($archiveSearch)
+$archiveGrid.Add_CellDoubleClick({
+    if($archiveGrid.CurrentRow){[void][System.Windows.Forms.MessageBox]::Show([string]$archiveGrid.CurrentRow.Tag,'Recorded event')}
+})
+$script:archiveRequested=$false
+$archiveButton.Add_Click({$script:archiveRequested=$true;$archiveButton.Enabled=$false;$archiveButton.Text='Searching archive... (collection resumes after scan)'})
 $tTree=New-Tab 'Process relationships'
 $tHealth=New-Tab 'Sources + Defender'
 $tNotes=New-Tab 'Scoring Safety'
@@ -273,11 +285,12 @@ $bAlerts.Add_Click({
 $worker=[powershell]::Create()
 $script:pending=$null;$script:first=$true;$script:batchCount=0;$script:lastHealth=@();$script:smokeStart=Get-Date
 $collect={
-    param($base,$data,$profilePath,$first)
+    param($base,$data,$profilePath,$first,$searchArchive,$archiveQuery)
     $ErrorActionPreference='Stop'
     Import-Module (Join-Path $base 'Monitoring.psm1')
     $profile=Read-CcdcProfile $profilePath
     $history=@();if($first){$history=@(Get-CcdcHistory $data)}
+    $archive=@();if($searchArchive){$archive=@(Get-CcdcHistory -DataDirectory $data -Query $archiveQuery)}
     $batch=Receive-CcdcBatch -DataDirectory $data -Profile $profile
     $tcpRows=@();$extra=@()
     try {
@@ -294,7 +307,7 @@ $collect={
         try {$defender=Get-MpComputerStatus -ErrorAction Stop | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureLastUpdated | Format-List | Out-String}
         catch {$defender='Defender unavailable: '+$_.Exception.Message}
     }
-    [pscustomobject]@{Records=@($history)+@($batch.Records);Health=@($batch.Health)+$extra;Tcp=$tcpRows;Defender=$defender}
+    [pscustomobject]@{Records=@($history)+@($batch.Records);Health=@($batch.Health)+$extra;Tcp=$tcpRows;Defender=$defender;Archive=$archive;ArchiveSearched=$searchArchive}
 }
 $timer=New-Object System.Windows.Forms.Timer
 $timer.Interval=2000
@@ -304,7 +317,15 @@ $timer.Add_Tick({
         try {
             $result=@($worker.EndInvoke($script:pending))
             if ($worker.HadErrors) { throw ($worker.Streams.Error | Out-String) }
-            $batch=$result[-1];$script:batchCount++;$script:lastHealth=@($batch.Health)
+            $batch=$result[-1];$script:first=$false;$script:batchCount++;$script:lastHealth=@($batch.Health)
+            if ($batch.ArchiveSearched) {
+                $archiveGrid.Rows.Clear()
+                foreach($r in $batch.Archive){
+                    $i=$archiveGrid.Rows.Add([object[]]@($r.Time,$r.Severity,$r.Kind,$r.Image,$r.CommandLine,$r.SourceIp,$r.DestinationIp))
+                    $archiveGrid.Rows[$i].Tag=ConvertTo-Json -InputObject $r -Depth 8
+                }
+                $archiveButton.Enabled=$true;$archiveButton.Text='Search complete history (latest 1200 matches)'
+            }
             foreach ($r in $batch.Records) {
                 if (-not $script:seen.Add($r.Key)) { continue }
                 $script:recent.Add($r);$script:count++
@@ -324,7 +345,7 @@ $timer.Add_Tick({
                 $script:tcp.Rows.Clear()
                 foreach($c in $batch.Tcp){[void]$script:tcp.Rows.Add([object[]]@($c.Local,$c.Remote,[string]$c.ProcessId,$c.Process,$c.State))}
             }
-        } catch { $script:status.Text='COLLECTION ERROR: '+$_.Exception.Message }
+        } catch { $script:status.Text='COLLECTION ERROR: '+$_.Exception.Message;$archiveButton.Enabled=$true }
         $script:pending=$null
     }
     if ($SmokeTestReport -and ((Get-Date)-$script:smokeStart).TotalSeconds -ge 20) {
@@ -335,8 +356,8 @@ $timer.Add_Tick({
         $form.Close();return
     }
     $worker.Commands.Clear();$worker.Streams.Error.Clear()
-    [void]$worker.AddScript($collect.ToString(),$false).AddArgument($script:base).AddArgument($DataDirectory).AddArgument($ProfilePath).AddArgument($script:first)
-    $script:pending=$worker.BeginInvoke();$script:first=$false
+    [void]$worker.AddScript($collect.ToString(),$false).AddArgument($script:base).AddArgument($DataDirectory).AddArgument($ProfilePath).AddArgument($script:first).AddArgument($script:archiveRequested).AddArgument($archiveSearch.Text)
+    $script:pending=$worker.BeginInvoke();$script:archiveRequested=$false
 })
 $form.Add_Shown({$timer.Start()})
 $form.Add_FormClosing({$timer.Stop();$timer.Dispose();$worker.Stop();$worker.Dispose()})

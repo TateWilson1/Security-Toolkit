@@ -53,6 +53,7 @@ try {
     Assert ($d.Records.Count -eq 0) 'Checkpoint failed to suppress duplicate polling'
     $history=@(Get-CcdcHistory $temp 1000)
     Assert ($history.Count -eq 601) 'Durable history must retain short-lived activity'
+    Assert (@(Get-CcdcHistory -DataDirectory $temp -Query 'test.exe').Count -eq 601) 'Archive search failed'
     Assert (@(Get-CcdcHistory $temp 10).Count -eq 10) 'History memory bound failed'
     & $module {$script:FailRead=$true}
     $errorBatch=Receive-CcdcBatch $temp $profile

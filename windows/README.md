@@ -48,6 +48,10 @@ folder). Never run the installer concurrently with another installation.
   original channel/record identity, command, user, PID, GUID and parent information.
 - **Search / Alerts only:** filter the recent 1200 retained events, including
   startup replay. Pause freezes the view while background collection continues.
+- **Search archive:** scan all daily JSONL journals in the background, retaining the
+  latest 1200 matches. Literal matching searches JSON text (backslashes are escaped);
+  double click a result for details. Collection resumes after the scan, so very
+  large archives can increase backlog.
 - **Process relationships:** GUID-linked creations from the retained view; double
   click for full details. Parents outside that view remain explicit. A process with
   the same PID in a different lifetime is not silently attached to an old parent.
