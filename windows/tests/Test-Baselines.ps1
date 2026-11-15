@@ -17,6 +17,9 @@ try{
     Assert ((Receive-CcdcBaselineScopes $temp $p @($changed)).Records.Count -eq 0) 'Unchanged drift must not duplicate alerts'
     $reverted=Receive-CcdcBaselineScopes $temp $p @($initial)
     Assert ($reverted.Records.Count -eq 1 -and $reverted.Records[0].Data.After -eq 'original.exe') 'Return to baseline must be recorded'
+    $changed.Items[0].Value='ORIGINAL.exe'
+    $caseOnly=Receive-CcdcBaselineScopes $temp $p @($changed)
+    Assert ($caseOnly.Records.Count -eq 1) 'Case-only registry arguments must not disappear'
     Assert ((Get-FileHash $baseline.FullName).Hash -eq $hash) 'First baseline overwritten'
     $users=Scope 'Local accounts' 'ACCOUNT' @([pscustomobject]@{Key='S-1-5-21-1';Value='existing'})
     $null=Receive-CcdcBaselineScopes $temp $p @($users)
@@ -26,6 +29,6 @@ try{
     $users.Available=$false;$users.Error='LDAP unavailable';$users.Items=@()
     $failed=Receive-CcdcBaselineScopes $temp $p @($users)
     Assert ($failed.Records.Count -eq 0 -and $failed.Health[0] -match 'UNAVAILABLE') 'Query failure must preserve baseline and not invent deleted users'
-    Assert (@(Get-CcdcHistory $temp).Count -eq 3) 'Baseline differences not durably journaled'
+    Assert (@(Get-CcdcHistory $temp).Count -eq 4) 'Baseline differences not durably journaled'
 }finally{if(Test-Path $temp){Remove-Item $temp -Recurse -Force}}
 Write-Host 'PASS: immutable registry baseline, drift/reversion, duplicate suppression, new-account detection without logs, failed enumeration safety'

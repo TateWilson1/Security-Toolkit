@@ -17,6 +17,8 @@ Assert ($proc.Count -eq 1 -and $proc[0].Severity -eq 'HIGH') 'SYSTEM-owned SQL s
 Assert ($proc[0].ParentProcessGuid -eq 'snapshot|50|a') 'Snapshot ancestry must preserve lifetime'
 Assert (@($rows | Where-Object Kind -eq 'PERSISTENCE').Count -eq 1) 'Task persistence change missing without logs'
 Assert (@($rows | Where-Object {$_.Kind -eq 'SENSOR' -and $_.Severity -eq 'HIGH'}).Count -eq 1) 'Sensor downgrade missing'
+$case=New-State @($parent) @([pscustomobject]@{Key='Task|Lab';Value='APPROVED.exe'}) ([pscustomobject]@{SysmonService='Running'})
+Assert (@(Compare-CcdcDirectState $case $old $p | Where-Object Kind -eq 'PERSISTENCE').Count -eq 1) 'Case-sensitive persistence arguments must not disappear'
 $newParent=$parent.PSObject.Copy();$newParent.Created='2026-11-14T18:00:05Z';$newParent.Lifetime='50|reused'
 $reuse=New-State @($newParent,$child) @() ([pscustomobject]@{SysmonService='Running'})
 $r=@(Compare-CcdcDirectState $reuse $null $p | Where-Object ProcessId -eq '51')[0]

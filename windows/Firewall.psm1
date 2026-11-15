@@ -24,7 +24,8 @@ function New-CcdcFirewallPlan {
         if(-not [Net.IPAddress]::TryParse($remote,[ref]$parsed)){throw 'Enter one specific IPv4/IPv6 address, or Any. Ranges/hostnames are not accepted.'}
         $remote=$parsed.ToString()
         if([Net.IPAddress]::IsLoopback($parsed) -or $remote -in @('0.0.0.0','::','255.255.255.255')){throw 'Loopback, unspecified and broadcast addresses are not valid containment targets.'}
-        if($Action -eq 'Block' -and $remote -in $Profile.KnownManagementAddresses){throw 'This address is in the management/scoring profile. Verify the profile and service dependency before considering a manual response.'}
+        $known=@(foreach($address in $Profile.KnownManagementAddresses){$knownIp=$null;if([Net.IPAddress]::TryParse([string]$address,[ref]$knownIp)){$knownIp.ToString()}})
+        if($Action -eq 'Block' -and $remote -in $known){throw 'This address is in the management/scoring profile. Verify the profile and service dependency before considering a manual response.'}
     }
     $portList=@()
     if($Ports -eq 'Any'){
@@ -40,6 +41,11 @@ function New-CcdcFirewallPlan {
         if($portList.Count -gt 10){throw 'Use at most 10 explicit ports per change.'}
     }
     $protected=@($Profile.RequiredPorts)
+    if($Profile.PSObject.Properties['ScoredServices']){
+        foreach($service in $Profile.ScoredServices){foreach($part in ([string]$service.Port -split '[,/]')){
+            $servicePort=0;if([int]::TryParse($part.Trim(),[ref]$servicePort) -and $servicePort -ge 1 -and $servicePort -le 65535){$protected+=$servicePort}
+        }}
+    }
     if($Role -eq 'AD'){$protected+=@(53,88,135,389,445,464,636,3268,3269,5985,5986)}
     $risk=($Ports -eq 'Any' -or @($portList | Where-Object {[int]$_ -in $protected -or ($Role -eq 'AD' -and [int]$_ -ge 49152)}).Count -gt 0)
     if($Action -eq 'Block' -and $remote -eq 'Any' -and $risk){throw 'Broad blocking of a protected/scored service is refused. Select a confirmed attacker IP and verify scoring first.'}
@@ -68,7 +74,7 @@ function Invoke-CcdcFirewallPlan {
             $parameters=@{Name=$name;DisplayName=('CCDC '+$Plan.Summary+' '+$protocol);Group='CCDC Toolkit';PolicyStore='PersistentStore'
                 Action=$Plan.Action;Direction=$Plan.Direction;Protocol=$protocol;RemoteAddress=$Plan.RemoteAddress
                 Profile=$Plan.NetworkProfile;Enabled='True';Description=('Approved manual change; recovery record '+$path);ErrorAction='Stop'}
-            if($Plan.Ports -notcontains 'Any'){$parameters.LocalPort=$Plan.Ports}
+            if($Plan.Ports -notcontains 'Any'){if($Plan.Direction -eq 'Inbound'){$parameters.LocalPort=$Plan.Ports}else{$parameters.RemotePort=$Plan.Ports}}
             $null=New-NetFirewallRule @parameters;$names+=$name
         }
         $record.Status='Applied';$record.RuleNames=$names
@@ -103,7 +109,7 @@ function Get-CcdcFirewallStatus {
         $rule=$_;$ports=Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
         $addresses=Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
         [pscustomobject]@{Name=$rule.Name;Action=[string]$rule.Action;Direction=[string]$rule.Direction;Enabled=[string]$rule.Enabled
-            Ports=($ports.LocalPort -join ',');Protocol=[string]$ports.Protocol;Remote=($addresses.RemoteAddress -join ',');Profile=[string]$rule.Profile}
+            Ports=$(if([string]$rule.Direction -eq 'Inbound'){'Local '+($ports.LocalPort -join ',')}else{'Remote '+($ports.RemotePort -join ',')});Protocol=[string]$ports.Protocol;Remote=($addresses.RemoteAddress -join ',');Profile=[string]$rule.Profile}
     })
     [pscustomobject]@{Profiles=$profiles;Rules=$rules}
 }

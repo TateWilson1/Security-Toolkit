@@ -316,3 +316,13 @@ cancel an existing explicit DNS block; centralized GPO can also prevent local ru
 from taking effect. Verify the live scoring portal and remote authenticated service
 access after each change. This version does not claim a local rule proves effective
 network reachability or automatically remove rules after a timer.
+
+Port controls refer to the local destination port for inbound rules and the remote
+destination port for outbound rules. The timeline labels Snapshot versus Event log
+explicitly; the shared counter counts records, including sampled observations.
+
+For an explicitly disposable lab, `tests/Test-CcdcSimulation.ps1 -AllowLabChanges`
+rehearses harmless CCDC-style behaviors and writes detector evidence and a separate
+PASS/FAIL/BLOCKED result for each case. Review [TESTING.md](TESTING.md) before running.
+It creates and removes its own SYSTEM task, inert Run value and disabled lab account;
+it never attacks an external target, steals credentials or disables Defender.

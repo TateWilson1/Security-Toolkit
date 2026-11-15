@@ -33,6 +33,11 @@ jobs:
       - name: Disposable Windows Server integration
         shell: powershell
         run: ./windows/tests/Test-WindowsIntegration.ps1 -Revision $env:GITHUB_SHA -AllowLabChanges -ResultsDirectory "$env:RUNNER_TEMP/ccdc-results"
+      - name: Benign CCDC behavior rehearsal
+        shell: powershell
+        run: |
+          $version = (Get-Content "$env:ProgramData/CCDC-BlueTeam/current-version.txt" -Raw).Trim()
+          ./windows/tests/Test-CcdcSimulation.ps1 -AllowLabChanges -ToolkitDirectory $version -ProfilePath "$env:ProgramData/CCDC-BlueTeam/profile.json" -ResultsDirectory "$env:RUNNER_TEMP/ccdc-results/simulation"
       - name: Preserve actual results and diagnostics
         if: always()
         uses: actions/upload-artifact@v4

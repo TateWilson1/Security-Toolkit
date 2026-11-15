@@ -138,13 +138,18 @@ try {
         Import-Module (Join-Path $installed 'Firewall.psm1') -Force
         $plan=New-CcdcFirewallPlan -Action Block -Ports '65321' -RemoteAddress '192.0.2.123' -Protocol Both -Profile $profile
         $fwEvidence=Join-Path $ResultsDirectory 'firewall-evidence'
-        $applied=$null
+        $applied=$null;$outbound=$null
         try{
             $applied=Invoke-CcdcFirewallPlan -Plan $plan -EvidenceDirectory $fwEvidence -Approved
             if($applied.RuleNames.Count -ne 2){throw 'Expected TCP and UDP rules'}
+            $outPlan=New-CcdcFirewallPlan -Action Block -Ports '65321' -RemoteAddress '192.0.2.123' -Protocol TCP -Direction Outbound -Profile $profile
+            $outbound=Invoke-CcdcFirewallPlan -Plan $outPlan -EvidenceDirectory $fwEvidence -Approved
+            $filter=Get-NetFirewallRule -Name $outbound.RuleNames[0] | Get-NetFirewallPortFilter
+            if($filter.RemotePort -notcontains '65321'){throw 'Outbound destination port filter incorrect'}
             $status=Get-CcdcFirewallStatus
             foreach($name in $applied.RuleNames){if(-not @($status.Rules | Where-Object Name -eq $name).Count){throw 'Applied rule absent from status'}}
         }finally{
+            if($outbound){foreach($name in $outbound.RuleNames){Undo-CcdcFirewallRule -Name $name -EvidenceDirectory $fwEvidence -Approved}}
             if($applied){foreach($name in $applied.RuleNames){Undo-CcdcFirewallRule -Name $name -EvidenceDirectory $fwEvidence -Approved}}
         }
         foreach($name in $applied.RuleNames){if(Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue){throw 'Toolkit rule remains after undo'}}

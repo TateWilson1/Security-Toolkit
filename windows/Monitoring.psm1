@@ -230,7 +230,7 @@ function Compare-CcdcDirectState {
         $old=@{};$now=@{}
         foreach($p in $Previous.Persistence){$old[$p.Key]=$p.Value}
         foreach($p in $Current.Persistence){$now[$p.Key]=$p.Value
-            if(-not $old.ContainsKey($p.Key) -or $old[$p.Key] -ne $p.Value){
+            if(-not $old.ContainsKey($p.Key) -or $old[$p.Key] -cne $p.Value){
                 $rows.Add((New-CcdcObservation 'PERSISTENCE' 'Persistence state added or changed since prior snapshot' @{Object=$p.Key;Before=$old[$p.Key];After=$p.Value} $Profile))
             }
         }
@@ -356,7 +356,7 @@ function Get-CcdcRegistryScopes {
         try{
             if(Test-Path -LiteralPath $path){
                 $keys=@(Get-Item -LiteralPath $path -ErrorAction Stop)
-                if($path -notin $valueOnly){$keys+=@(Get-ChildItem -LiteralPath $path -Recurse -ErrorAction Stop)}
+                if($path -notin $valueOnly){$keys+=@(Get-ChildItem -LiteralPath $path -Recurse -ErrorAction Stop | Select-Object -First 10000)}
                 if($keys.Count -gt 10000){throw 'Scope exceeds 10000 keys; tune RegistryPaths to bound overhead'}
                 $items=@(foreach($key in $keys){
                     [pscustomobject]@{Key=($key.Name+'|<KEY>');Value='Present'}
@@ -424,7 +424,7 @@ function Receive-CcdcBaselineScopes {
                 $saved=if(Test-Path $lastPath){Get-Content $lastPath -Raw | ConvertFrom-Json}else{$baseline.Items}
                 foreach($prop in $saved.PSObject.Properties){$before[$prop.Name]=[string]$prop.Value}
                 foreach($key in @(@($now.Keys)+@($before.Keys) | Sort-Object -Unique)){
-                    if($before.ContainsKey($key) -eq $now.ContainsKey($key) -and $before[$key] -eq $now[$key]){continue}
+                    if($before.ContainsKey($key) -eq $now.ContainsKey($key) -and $before[$key] -ceq $now[$key]){continue}
                     $original=$baseline.Items.PSObject.Properties[$key]
                     $action=if(-not $before.ContainsKey($key)){'Added'}elseif(-not $now.ContainsKey($key)){'Removed'}else{'Changed'}
                     $fields=@{Scope=$scope.Name;Object=$key;Change=$action;Before=$before[$key];After=$now[$key];Baseline=$(if($original){$original.Value}else{'Absent from first baseline'})}

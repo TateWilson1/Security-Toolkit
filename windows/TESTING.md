@@ -75,3 +75,49 @@ changes, PID reuse, independent journaling and preservation of state on failed q
 Windows CI runs this alongside the original collector suite. Additional real-VM
 checks validate native direct snapshots; domain/Testimo execution needs a domain lab.
 The uploaded packet is local reference material and is not committed to this public PR.
+
+## Recorded Windows runs and independent review
+
+- [Run 43654879649](https://github.com/TateWilson1/Security-Toolkit/actions/runs/43654879649),
+  commit `003a235`: real Server 2022 / Windows PowerShell 5.1, 12 integration cases
+  passed, including missing Sysmon GUI handling and source-health assertions.
+- [Run 43656651163](https://github.com/TateWilson1/Security-Toolkit/actions/runs/43656651163),
+  commit `2405ce9`: expanded native process/socket/task, immutable registry baseline
+  and newly-created disabled-account checks passed. GUI reported no collection errors.
+- [Run 43657251139](https://github.com/TateWilson1/Security-Toolkit/actions/runs/43657251139),
+  commit `a72770e`: 15 integration cases passed, including approved TCP/UDP firewall
+  rule creation, status lookup and exact-name undo. This is Server **2022** evidence;
+  Server 2019 is targeted by shared APIs but is not runtime-verified.
+
+Earlier failing runs were retained: Windows checkout line endings invalidated hashes;
+empty EventData and UserData-only records initially blocked channels; later missing
+policy values and protected LSA subkeys exposed source-handling issues. These were
+fixed, regression checked and rerun, rather than relabeled as successful coverage.
+
+A design subagent reviewed actual screenshots using the available visualization and
+mockup skill. Changes include stable alert selection, early next-step guidance,
+short navigation labels, consistent grids, grouped firewall fields, No-default
+confirmations and readable header/health indicators. A separate validation subagent
+ran the suites and caught a scored-port protection gap for Splunk 8089; protection
+now derives from ScoredServices as well as RequiredPorts, with a regression test.
+
+The independent subagent also supplied `Test-CcdcSimulation.ps1`, now wired into CI
+after integration. It runs benign encoded PowerShell, actual local WMI-created CMD,
+a SYSTEM-owned task, an inert Run value, a disabled unprivileged user and a held
+localhost connection, and verifies detector observations. It attempts existing
+localhost WinRM without changing remoting configuration; unavailable remoting is
+BLOCKED, while detection failures after successful remoting are FAIL. Unique test
+artifacts are cleaned in finally blocks. Actual Evil-WinRM clients, malicious
+payloads, credential compromise, security-product disabling and external targets
+are not used. Consult the **latest run's** simulation JSON artifacts for outcomes;
+adding a harness is not itself evidence of a successful simulation.
+
+Resource samples so far are short smoke checks (roughly 220–300 MiB working set in
+the recorded 2405ce9 runner samples), not a long-term DC capacity result. This runner
+reported Defender real-time protection inactive, and the GUI correctly warned;
+status collection passing is not a claim Defender protection was active.
+
+Latest revisions add outbound destination-port and IPv6 management-address checks,
+all-tab screenshots, novice-oriented design refinements and benign simulation.
+Their final results are available in the PR's latest Actions run. The recorded
+commit-specific results above should not be interpreted as testing later code.
