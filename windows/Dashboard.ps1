@@ -200,6 +200,7 @@ function Explain-Event($r){
         ('Command: '+$r.CommandLine)
         ('Network: '+$r.SourceIp+':'+$r.SourcePort+' -> '+$r.DestinationIp+':'+$r.DestinationPort)
         ('Observation source: '+$r.Channel)
+        ('How it was seen: '+$r.Data.Observation)
         ''
         'NEXT: Check whether a teammate, scoring engine or application was expected to do this.'
         'Save evidence. Ask a teammate before stopping anything. Recheck scoring after any response.'
@@ -398,7 +399,7 @@ $bAlerts.Add_Click({
 # All Windows queries and disk writes execute in a dedicated runspace. UI never waits
 # synchronously for a query. A single outstanding batch bounds memory under load.
 $worker=[powershell]::Create()
-$script:pending=$null;$script:first=$true;$script:batchCount=0;$script:hadCollectionError=$false;$script:lastHealth=@();$script:smokeStart=Get-Date
+$script:pending=$null;$script:first=$true;$script:batchCount=0;$script:hadCollectionError=$false;$script:collectionErrors=New-Object 'System.Collections.Generic.List[string]';$script:lastHealth=@();$script:smokeStart=Get-Date
 $collect={
     param($base,$data,$profilePath,$first,$searchArchive,$archiveQuery)
     $ErrorActionPreference='Stop'
@@ -446,7 +447,9 @@ $timer.Add_Tick({
         if (-not $script:pending.IsCompleted) { return }
         try {
             $result=@($worker.EndInvoke($script:pending))
-            if ($worker.HadErrors) { throw ($worker.Streams.Error | Out-String) }
+            # Expected source failures are handled and returned as health warnings.
+            # EndInvoke throws unhandled terminating errors; HadErrors also includes
+            # deliberately caught/suppressed probe errors and is not a success test.
             $batch=$result[-1];$script:first=$false;$script:batchCount++;$script:lastHealth=@($batch.Health)
             if ($batch.ArchiveSearched) {
                 $archiveGrid.Rows.Clear()
@@ -477,11 +480,11 @@ $timer.Add_Tick({
                 $script:tcp.Rows.Clear()
                 foreach($c in $batch.Tcp){[void]$script:tcp.Rows.Add([object[]]@($c.Local,$c.Remote,[string]$c.ProcessId,$c.Process,$c.State))}
             }
-        } catch { $script:hadCollectionError=$true;$coverage.Text='MONITORING ERROR - investigate visibility before trusting a quiet screen';$coverage.ForeColor=$red;$script:status.Text='COLLECTION ERROR: '+$_.Exception.Message;$archiveButton.Enabled=$true }
+        } catch { $script:hadCollectionError=$true;$script:collectionErrors.Add(($_.Exception.Message+' '+$_.ScriptStackTrace));$coverage.Text='MONITORING ERROR - investigate visibility before trusting a quiet screen';$coverage.ForeColor=$red;$script:status.Text='COLLECTION ERROR: '+$_.Exception.Message;$archiveButton.Enabled=$true }
         $script:pending=$null
     }
     if ($SmokeTestReport -and ((Get-Date)-$script:smokeStart).TotalSeconds -ge 20) {
-        [pscustomobject]@{Batches=$script:batchCount;HadCollectionError=$script:hadCollectionError;Events=$script:count;Health=$script:lastHealth;Status=$script:status.Text;Rows=$script:eventGrid.Rows.Count} |
+        [pscustomobject]@{Batches=$script:batchCount;HadCollectionError=$script:hadCollectionError;Errors=$script:collectionErrors.ToArray();Events=$script:count;Health=$script:lastHealth;Status=$script:status.Text;Rows=$script:eventGrid.Rows.Count} |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $SmokeTestReport -Encoding UTF8
         $bitmap=New-Object System.Drawing.Bitmap($form.Width,$form.Height)
         try {$form.DrawToBitmap($bitmap,$form.ClientRectangle);$bitmap.Save(($SmokeTestReport+'.png'))} finally {$bitmap.Dispose()}

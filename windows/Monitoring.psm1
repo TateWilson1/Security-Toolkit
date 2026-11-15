@@ -242,11 +242,19 @@ function Compare-CcdcDirectState {
         $prior=$Previous.Sensors.PSObject.Properties[$property.Name]
         if($prior -and [string]$prior.Value -ne [string]$property.Value){
             $r=New-CcdcObservation 'SENSOR' 'Security sensor state changed; verify teammate activity and possible tampering' @{Sensor=$property.Name;Before=[string]$prior.Value;After=[string]$property.Value} $Profile
-            $r.Severity='HIGH';$r.Reasons=@('Security visibility changed. This can hide activity even when the account looks trusted.')
+            $r.Severity=if([string]$property.Value -in @('Running','1','True')){'INFO'}else{'HIGH'};$r.Reasons=@('Security visibility changed. Verify expected configuration; account names alone do not establish trust.')
             $rows.Add($r)
         }
     }}
     $rows.ToArray()
+}
+function Get-CcdcPolicyValue([string]$Path,[string]$Name) {
+    if(-not(Test-Path -LiteralPath $Path)){return 'Not configured'}
+    try {
+        $key=Get-Item -LiteralPath $Path -ErrorAction Stop
+        if($key.GetValueNames() -notcontains $Name){return 'Not configured'}
+        return [string]$key.GetValue($Name)
+    }catch{return 'Unavailable: '+$_.Exception.Message}
 }
 function Get-CcdcDirectState {
     param([switch]$IncludePersistence)
@@ -277,8 +285,8 @@ function Get-CcdcDirectState {
     $sysmon=@(Get-Service Sysmon,Sysmon64 -ErrorAction SilentlyContinue)
     $sensors=[pscustomobject]@{
         SysmonService=$(if($sysmon.Count){($sysmon.Status -join ',')}else{'Missing'})
-        ScriptBlockLogging=[string](Get-ItemPropertyValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' 'EnableScriptBlockLogging' -ErrorAction SilentlyContinue)
-        ProcessCommandLineLogging=[string](Get-ItemPropertyValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit' 'ProcessCreationIncludeCmdLine_Enabled' -ErrorAction SilentlyContinue)
+        ScriptBlockLogging=(Get-CcdcPolicyValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' 'EnableScriptBlockLogging')
+        ProcessCommandLineLogging=(Get-CcdcPolicyValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit' 'ProcessCreationIncludeCmdLine_Enabled')
     }
     try {
         $defender=Get-MpComputerStatus -ErrorAction Stop
@@ -341,11 +349,14 @@ function Get-CcdcRegistryScopes {
         'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon','HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell',
         'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa','HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options')
     if($Profile.PSObject.Properties['RegistryPaths']){$paths=@($Profile.RegistryPaths)}
+    $valueOnly=@('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa')
+    if($Profile.PSObject.Properties['RegistryValueOnlyPaths']){$valueOnly=@($Profile.RegistryValueOnlyPaths)}
     foreach($path in $paths){
         $items=@();$errorText='';$ok=$true
         try{
             if(Test-Path -LiteralPath $path){
-                $keys=@(Get-Item -LiteralPath $path -ErrorAction Stop)+@(Get-ChildItem -LiteralPath $path -Recurse -ErrorAction Stop)
+                $keys=@(Get-Item -LiteralPath $path -ErrorAction Stop)
+                if($path -notin $valueOnly){$keys+=@(Get-ChildItem -LiteralPath $path -Recurse -ErrorAction Stop)}
                 if($keys.Count -gt 10000){throw 'Scope exceeds 10000 keys; tune RegistryPaths to bound overhead'}
                 $items=@(foreach($key in $keys){
                     [pscustomobject]@{Key=($key.Name+'|<KEY>');Value='Present'}
@@ -356,7 +367,7 @@ function Get-CcdcRegistryScopes {
                 })
             }
         }catch{$ok=$false;$errorText=$_.Exception.Message}
-        [pscustomobject]@{Name=('Registry '+$path);Kind='REGISTRY';Available=$ok;Items=$items;Error=$errorText}
+        [pscustomobject]@{Name=('Registry '+$path+$(if($path -in $valueOnly){' (values only; subkeys excluded)'}else{''}));Kind='REGISTRY';Available=$ok;Items=$items;Error=$errorText}
     }
 }
 function Get-CcdcAccountScopes {
@@ -417,6 +428,9 @@ function Receive-CcdcBaselineScopes {
                     $original=$baseline.Items.PSObject.Properties[$key]
                     $action=if(-not $before.ContainsKey($key)){'Added'}elseif(-not $now.ContainsKey($key)){'Removed'}else{'Changed'}
                     $fields=@{Scope=$scope.Name;Object=$key;Change=$action;Before=$before[$key];After=$now[$key];Baseline=$(if($original){$original.Value}else{'Absent from first baseline'})}
+                    if($scope.Kind -eq 'ACCOUNT'){
+                        try{$account=([string]$(if($now.ContainsKey($key)){$now[$key]}else{$before[$key]}) | ConvertFrom-Json);$fields['User']=[string]$account.Name}catch{$fields['User']=$key}
+                    }else{$fields['Image']=$key}
                     $r=New-CcdcObservation $scope.Kind ($action+' since last sample; compared with immutable first baseline') $fields $Profile
                     $r.Severity='REVIEW'
                     $r.Reasons=@($(if($scope.Kind -eq 'ACCOUNT'){'Account '+$action.ToLower()+': verify authorized team/scoring work. Account name is not proof of trust.'}else{'Registry '+$action.ToLower()+': inspect the original baseline and confirm an approved change.'}))

@@ -261,7 +261,9 @@ also recorded. Failed/unreadable scopes report coverage errors and preserve thei
 last successful state. This is value/key comparison, not a registry restore tool.
 
 Default scopes recursively cover HKLM Run/RunOnce, Winlogon, PowerShell policy,
-LSA and Image File Execution Options. This is **not a complete registry hive backup**:
+Image File Execution Options, and LSA root values. Protected LSA subkeys are
+explicitly excluded from the default scope; RegistryValueOnlyPaths controls which
+configured roots omit recursion. This is **not a complete registry hive backup**:
 loaded user hives, unrelated application keys and protected unreadable areas may be
 outside coverage. Add `RegistryPaths` (an array of registry-provider paths) to the
 profile to choose explicit scopes; each scope is capped at 10000 keys and fails
