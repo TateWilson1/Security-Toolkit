@@ -88,7 +88,7 @@ try{
         $rows=@(Wait-SysmonObservation @(1) { $_.ProcessId -eq $expectedId -and $_.CommandLine -like "*$marker-wmi*" })
         Assert-Simulation ($rows.Count -gt 0) 'WMI-created short process absent from history.'
         Assert-Simulation (@($rows | Where-Object ParentImage -like '*\WmiPrvSE.exe').Count -gt 0) 'Expected real WmiPrvSE ancestry was not observed; do not claim WMI coverage.'
-        Assert-Simulation (@($rows | Where-Object Severity -in @('REVIEW','HIGH')).Count -gt 0) 'WMI ancestry generated no review lead.'
+        Assert-Simulation (@($rows | Where-Object Severity -eq 'INFO').Count -gt 0) 'Benign WMI ancestry must be recorded without a standalone alert.'
         $expectedReason=($profile.Rules | Where-Object Id -eq 'remote-parent').Description
         Assert-Simulation (@($rows | Where-Object {$expectedReason -in $_.Reasons}).Count -gt 0) 'Remote/WMI ancestry rule did not match; a generic shell alert is insufficient.'
         'Used local CIM only. This is not remote WMI or credential-compromise testing.'
@@ -155,7 +155,7 @@ try{
         foreach($row in $changes){$observations.Add($row)}
         'New account detected without Event 4720; the account was never enabled, authenticated or added to a privileged group.'
     }
-    Test-SimulationStep 'Localhost PowerShell TCP observation' {
+    Test-SimulationStep 'Localhost PowerShell TCP observation without a name-only alert' {
         $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0)
         $listener.Start();$client=$null;$server=$null
         try{
@@ -166,7 +166,7 @@ try{
             Assert-Simulation $snapshot.ConnectionsAvailable 'Direct TCP source unavailable.'
             $rows=@(Compare-CcdcDirectState $snapshot $null $profile | Where-Object {$_.Kind -eq 'CONNECTION' -and ($_.DestinationPort -eq [string]$port -or $_.SourcePort -eq [string]$port)})
             Assert-Simulation ($rows.Count -gt 0) 'Live localhost socket was not observed.'
-            Assert-Simulation (@($rows | Where-Object Severity -in @('REVIEW','HIGH')).Count -gt 0) 'PowerShell network observation generated no review lead.'
+            Assert-Simulation (@($rows | Where-Object Severity -eq 'INFO').Count -gt 0) 'A plain PowerShell socket must stay informational.'
             foreach($row in $rows){$observations.Add($row)}
             'Held a local socket only; this does not prove capture of every short-lived connection.'
         }finally{if($server){$server.Dispose()};if($client){$client.Dispose()};$listener.Stop()}
@@ -186,7 +186,7 @@ try{
             Test-SimulationStep 'Existing localhost WinRM administration' {
                 $rows=@(Wait-SysmonObservation @(1) { $_.CommandLine -like "*$marker-winrm*" })
                 Assert-Simulation (@($rows | Where-Object ParentImage -like '*\wsmprovhost.exe').Count -gt 0) 'wsmprovhost child was not recorded.'
-                Assert-Simulation (@($rows | Where-Object Severity -eq 'REVIEW').Count -gt 0) 'Expected review-level remote administration lead missing.'
+                Assert-Simulation (@($rows | Where-Object Severity -eq 'INFO').Count -gt 0) 'Ordinary remote administration must stay informational.'
                 Assert-Simulation (@($rows | Where-Object Severity -eq 'HIGH').Count -eq 0) 'Ordinary WinRM test was incorrectly elevated to HIGH by default rules.'
                 'Existing local WinRM ran a harmless command; this is not Evil-WinRM client attribution or a domain/scorer authentication test.'
             }

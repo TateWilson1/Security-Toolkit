@@ -52,13 +52,13 @@ try {
         $global:labEvents=@(Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational';Id=1;StartTime=$start.ToLocalTime()} | ForEach-Object {ConvertTo-CcdcEvent $_.ToXml() $profile})
         if(-not @($labEvents | Where-Object CommandLine -like "*$marker*").Count){throw 'Test process not captured'}
     }
-    Test-Step 'Short CMD, parent GUID, command line, UTC timestamp, alert' {
+    Test-Step 'Short CMD, ancestry/command/time and benign severity' {
         $children=@($labEvents | Where-Object {$_.Image -like '*\cmd.exe' -and $_.CommandLine -like "*$marker*"})
         if(-not $children.Count){throw 'Short-lived CMD missing'}
         if(-not @($children | Where-Object ParentProcessGuid).Count){throw 'Ancestry missing'}
         $parents=@($labEvents | Where-Object {$_.Image -like '*\powershell.exe' -and $_.CommandLine -like "*$marker*"})
         if(-not @($children | Where-Object {$_.ParentProcessGuid -in $parents.ProcessGuid}).Count){throw 'CMD was not linked to the recorded PowerShell parent GUID'}
-        if(-not @($labEvents | Where-Object {$_.CommandLine -like "*$marker*" -and $_.Severity -eq 'REVIEW'}).Count){throw 'Alert missing'}
+        if(@($labEvents | Where-Object {$_.CommandLine -like "*$marker*" -and $_.Severity -ne 'INFO'}).Count){throw 'Benign process creation was incorrectly alerted'}
         foreach($r in $children){if([datetimeoffset]::Parse($r.Time).UtcDateTime -lt $start){throw 'Timestamp predates test'}}
     }
     Test-Step 'Process termination events' {
@@ -103,7 +103,7 @@ try {
             $heldProcess=Start-Process powershell.exe -ArgumentList ('-NoProfile -Command "Write-Output '+$marker+'-direct; Start-Sleep -Seconds 30"') -PassThru
             $after=Get-CcdcDirectState -IncludePersistence
             $rows=@(Receive-CcdcDirectState $directData $profile $after)
-            if(-not @($rows | Where-Object {$_.Kind -eq 'PROCESS' -and $_.CommandLine -like "*$marker-direct*" -and $_.Severity -eq 'REVIEW'}).Count){throw 'Direct process behavior observation missing'}
+            if(-not @($rows | Where-Object {$_.Kind -eq 'PROCESS' -and $_.CommandLine -like "*$marker-direct*" -and $_.Severity -eq 'INFO'}).Count){throw 'Benign direct process must be recorded without an alert'}
             if(-not @($rows | Where-Object {$_.Kind -eq 'PERSISTENCE' -and $_.Data.Object -like "*$taskName*"}).Count){throw 'Direct task change missing'}
         }finally{
             if($heldProcess -and -not $heldProcess.HasExited){Stop-Process -Id $heldProcess.Id}

@@ -25,14 +25,14 @@
   "Rules": [
     {
       "Id": "shell",
-      "Enabled": true,
+      "Enabled": false,
       "Kinds": [
         "PROCESS"
       ],
       "Field": "Image",
       "Pattern": "\\\\(powershell|pwsh|cmd|mshta|wmic|certutil|rundll32)\\.exe$",
       "Severity": "REVIEW",
-      "Description": "Command interpreter or administrative utility: review command and ancestry"
+      "Description": "Optional broad utility hunting rule; disabled by default to avoid name-only alerts"
     },
     {
       "Id": "remote-parent",
@@ -42,8 +42,8 @@
       ],
       "Field": "ParentImage",
       "Pattern": "\\\\(wsmprovhost|wmiprvse)\\.exe$",
-      "Severity": "REVIEW",
-      "Description": "Remote administration ancestry; may be approved WinRM/WMI or scoring"
+      "Severity": "INFO",
+      "Description": "Remote administration ancestry recorded; additional suspicious behavior is needed for an alert"
     },
     {
       "Id": "service-child",
@@ -54,7 +54,13 @@
       "Field": "ParentImage",
       "Pattern": "\\\\(w3wp|sqlservr)\\.exe$",
       "Severity": "HIGH",
-      "Description": "Web or SQL worker child: verify application behavior"
+      "Description": "Web or SQL worker spawned a command interpreter or execution utility; verify application behavior",
+      "AllOf": [
+        {
+          "Field": "Image",
+          "Pattern": "\\\\(powershell|pwsh|cmd|mshta|wscript|cscript|rundll32)\\.exe$"
+        }
+      ]
     },
     {
       "Id": "script-pattern",
@@ -70,14 +76,14 @@
     },
     {
       "Id": "shell-network",
-      "Enabled": true,
+      "Enabled": false,
       "Kinds": [
         "CONNECTION"
       ],
       "Field": "Image",
       "Pattern": "\\\\(powershell|pwsh|cmd|mshta|rundll32)\\.exe$",
       "Severity": "REVIEW",
-      "Description": "Network activity by an interpreter or utility"
+      "Description": "Optional broad utility hunting rule; disabled by default to avoid name-only alerts"
     },
     {
       "Id": "remote-tool-script",
@@ -149,5 +155,6 @@
     "Preserve ICMP and assigned names/addresses",
     "Do not disable unfamiliar scoring or service accounts",
     "No automatic containment; verify scoring after approved changes"
-  ]
+  ],
+  "DetectionDefaultsVersion": 2
 }

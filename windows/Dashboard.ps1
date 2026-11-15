@@ -106,7 +106,7 @@ $coverage.Dock='Top';$coverage.Height=36;$coverage.ForeColor=$amber
 $coverage.Text='Checking visibility. A quiet screen does not prove a server is safe.'
 $legend=New-Object System.Windows.Forms.Label
 $legend.Dock='Top';$legend.Height=32;$legend.ForeColor=$fg
-$legend.Text='RED: Investigate first    |    AMBER: Review with a teammate    |    GREEN: No rule matched (not verified safe)'
+$legend.Text='RED: Investigate first    |    AMBER: Review with a teammate    |    GREEN: No alert triggered (not verified safe)'
 $overviewPanel.Controls.Add($legend);$overviewPanel.Controls.Add($coverage);$overviewPanel.Controls.Add($overviewTitle)
 $overviewSplit=New-Object System.Windows.Forms.SplitContainer
 $overviewSplit.Dock='Fill';$overviewSplit.Orientation='Horizontal';$overviewSplit.Size=[System.Drawing.Size]::new(1200,500);$overviewSplit.SplitterDistance=260
@@ -261,8 +261,8 @@ Set-Grid $archiveGrid
 foreach($column in @(@('Priority','What to do'),@('What','What happened'),@('Why','Why it needs attention'),@('Account','Account (context only)'),@('At','Time (local)'))){[void]$overviewGrid.Columns.Add($column[0],$column[1])}
 $overviewGrid.Columns['Why'].FillWeight=220
 function Explain-Event($r){
-    $label=if($r.Severity -eq 'HIGH'){'INVESTIGATE FIRST'}elseif($r.Severity -eq 'REVIEW'){'REVIEW WITH A TEAMMATE'}else{'NO RULE MATCHED - KEEP MONITORING'}
-    $why=if(@($r.Reasons).Count){$r.Reasons -join [Environment]::NewLine}else{'No detection rule matched. This does not prove the activity is safe.'}
+    $label=if($r.Severity -eq 'HIGH'){'INVESTIGATE FIRST'}elseif($r.Severity -eq 'REVIEW'){'REVIEW WITH A TEAMMATE'}else{'NO ALERT - KEEP MONITORING'}
+    $why=if(@($r.Reasons).Count){$r.Reasons -join [Environment]::NewLine}else{'No alert condition matched. This does not prove the activity is safe.'}
     @(
         $label
         ''

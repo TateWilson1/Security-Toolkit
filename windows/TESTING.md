@@ -180,3 +180,15 @@ remain unimplemented; manual scoped firewall controls are explicitly approved on
 The final documentation/manifest commit does not change the reviewed monitoring,
 firewall or GUI code. Its associated CI reruns the pinned installer and rehearsal
 against that complete payload; use the latest PR checks for that revision's result.
+
+## Detection-default revision 2
+
+The earlier run records above describe the previous defaults. Revision 2 removes
+name-only shell/socket alerts, keeps ordinary WinRM/WMI ancestry informational, and
+requires an additional interpreter condition for the web/SQL-child HIGH rule.
+Regression tests explicitly assert ordinary PowerShell stays INFO under scorer,
+SYSTEM and service identities; benign socket/WMI/WinRM observations are not alerts;
+encoded execution remains REVIEW and web/SQL-spawned interpreters remain HIGH.
+Native integration and simulation expectations now verify both useful detections
+and benign activity remaining informational. Consult the latest PR run for this
+revision; prior successful runs do not validate the new defaults.

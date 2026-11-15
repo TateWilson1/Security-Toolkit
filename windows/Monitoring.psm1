@@ -15,9 +15,13 @@ function Read-CcdcProfile([string]$Path) {
     if ($p.SchemaVersion -ne 1) { throw 'Unsupported profile schema.' }
     foreach ($rule in $p.Rules) {
         if ($rule.Severity -notin @('INFO','REVIEW','HIGH')) { throw "Invalid severity: $($rule.Id)" }
-        if ($rule.Field -notin @('Image','ParentImage','CommandLine','DestinationIp','DestinationPort','User','SourceIp')) { throw "Invalid rule field: $($rule.Id)" }
-        # Compile with a timeout to reject malformed expressions and limit custom-rule work.
-        $null = New-Object regex($rule.Pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [timespan]::FromMilliseconds(100))
+        $conditions=@($rule)
+        if($rule.PSObject.Properties['AllOf']){$conditions+=@($rule.AllOf)}
+        foreach($condition in $conditions){
+            if ($condition.Field -notin @('Image','ParentImage','CommandLine','DestinationIp','DestinationPort','User','SourceIp')) { throw "Invalid rule field: $($rule.Id)" }
+            # Compile all conditions with a timeout, including compound rules.
+            $null = New-Object regex($condition.Pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [timespan]::FromMilliseconds(100))
+        }
     }
     return $p
 }
@@ -84,7 +88,14 @@ function Set-CcdcDetection {
     foreach ($rule in $Profile.Rules) {
         if (-not $rule.Enabled -or ($rule.Kinds.Count -gt 0 -and $kind -notin $rule.Kinds)) { continue }
         $regex = New-Object regex($rule.Pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [timespan]::FromMilliseconds(100))
-        if ($regex.IsMatch([string]$r.($rule.Field))) {
+        $matchesRule=$regex.IsMatch([string]$r.($rule.Field))
+        if($matchesRule -and $rule.PSObject.Properties['AllOf']){
+            foreach($condition in $rule.AllOf){
+                $other=New-Object regex($condition.Pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [timespan]::FromMilliseconds(100))
+                if(-not $other.IsMatch([string]$r.($condition.Field))){$matchesRule=$false;break}
+            }
+        }
+        if ($matchesRule) {
             $reasons.Add([string]$rule.Description)
             if (@('INFO','REVIEW','HIGH').IndexOf($rule.Severity) -gt @('INFO','REVIEW','HIGH').IndexOf($r.Severity)) { $r.Severity=$rule.Severity }
         }

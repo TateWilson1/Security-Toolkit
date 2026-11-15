@@ -10,7 +10,7 @@ function New-Xml([int]$Id,[string]$Channel,[long]$RecordId,[hashtable]$Data) {
 $sysmon='Microsoft-Windows-Sysmon/Operational'
 $x=New-Xml 1 $sysmon 1 @{Image='C:\Windows\System32\cmd.exe';ParentImage='C:\Windows\System32\wsmprovhost.exe';CommandLine='cmd /c echo <safe> & exit';ProcessId='123';ProcessGuid='{child}';ParentProcessGuid='{parent}';ParentProcessId='50';User='LAB\scorer'}
 $r=ConvertTo-CcdcEvent $x $profile
-Assert ($r.Severity -eq 'REVIEW') 'WinRM must be a review lead, not confirmed malicious'
+Assert ($r.Severity -eq 'INFO') 'Ordinary WinRM ancestry must remain informational without suspicious behavior'
 Assert ($r.CommandLine -eq 'cmd /c echo <safe> & exit') 'XML escaping lost command content'
 Assert ($r.ProcessGuid -eq '{child}' -and $r.ParentProcessGuid -eq '{parent}' -and $r.ProcessId -eq '123') 'Process lifetime/ancestry lost'
 Assert ($r.Time -eq '2026-11-14T18:00:01.1234567+00:00') 'Timestamp precision/UTC lost'
@@ -39,6 +39,18 @@ $r=ConvertTo-CcdcEvent (New-Xml 91 'Microsoft-Windows-WinRM/Operational' 10 @{Re
 Assert ($r.Kind -eq 'REMOTE-MANAGEMENT' -and $r.Severity -eq 'INFO') 'Ordinary WinRM telemetry must not claim a malicious client'
 $r=ConvertTo-CcdcEvent (New-Xml 4104 'Microsoft-Windows-PowerShell/Operational' 11 @{ScriptBlockText='Invoke-Binary sample.exe';User='NT AUTHORITY\SYSTEM'}) $profile
 Assert ($r.Severity -eq 'REVIEW') 'Remote-tool behavior must alert even for SYSTEM'
+foreach($account in @('LAB\scorer','NT AUTHORITY\SYSTEM','LAB\sql-service')){
+    $r=ConvertTo-CcdcEvent (New-Xml 1 $sysmon 20 @{Image='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe';ParentImage='C:\Windows\explorer.exe';CommandLine='powershell.exe -NoProfile -Command Get-Service';User=$account}) $profile
+    Assert ($r.Severity -eq 'INFO' -and $r.Reasons.Count -eq 0) 'PowerShell name or account identity alone must not create an alert'
+}
+$r=ConvertTo-CcdcEvent (New-Xml 3 $sysmon 21 @{Image='C:\Windows\powershell.exe';DestinationIp='127.0.0.1';DestinationPort='5985';User='LAB\scorer'}) $profile
+Assert ($r.Severity -eq 'INFO') 'An interpreter network observation alone must not create an alert'
+$r=ConvertTo-CcdcEvent (New-Xml 1 $sysmon 22 @{Image='C:\SQL\sqlmaint.exe';ParentImage='C:\SQL\sqlservr.exe';CommandLine='sqlmaint.exe /backup'}) $profile
+Assert ($r.Severity -eq 'INFO') 'A normal SQL child must not be promoted to HIGH without a matching interpreter'
+$r=ConvertTo-CcdcEvent (New-Xml 1 $sysmon 23 @{Image='C:\Windows\powershell.exe';ParentImage='C:\Windows\explorer.exe';CommandLine='powershell -EncodedCommand AAA='}) $profile
+Assert ($r.Severity -eq 'REVIEW') 'Encoded execution must retain its specific behavior lead'
+$r=ConvertTo-CcdcEvent (New-Xml 1 $sysmon 24 @{Image='C:\Windows\cmd.exe';ParentImage='C:\Windows\System32\inetsrv\w3wp.exe';CommandLine='cmd /c echo benign-test'}) $profile
+Assert ($r.Severity -eq 'HIGH') 'Web-worker interpreter ancestry must retain compound detection'
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('ccdc-tests-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $temp
 try {

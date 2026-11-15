@@ -94,9 +94,9 @@ Rules have ID, Enabled, Kinds, Field, regex Pattern, Severity and Description.
 Supported severities: INFO, REVIEW, HIGH. Highest matching severity wins; regexes
 have a 100 ms timeout. Malformed rules stop loading and report the error.
 
-Remote WinRM/WMI ancestry is REVIEW, not proof of compromise. Benign script blocks
-are INFO unless a configured rule matches. Web/SQL child processes are a heuristic
-HIGH lead requiring application context. Account/group/task/service changes are
+Ordinary WinRM/WMI ancestry is INFO. It remains searchable without an alert. Benign script blocks
+are INFO unless a configured rule matches. Web/SQL children create a heuristic HIGH lead only when an additional interpreter/
+execution-utility condition also matches; application context is still required. Account/group/task/service changes are
 review leads, not a claim every group is administrative. Alerts do not trigger
 response. RequiredPorts, ProtectedServices and ServerRole are packet metadata for
 operators/future response work; they currently do not enforce policy or alter
@@ -214,7 +214,7 @@ network capture is enabled by adding the channel.
 
 The opening **START HERE** tab puts red **Investigate first** items ahead of amber
 **Review** items. Selecting one explains what happened, why it matched, which
-account ran it and what to check next. Green means **No rule matched**, never a
+account ran it and what to check next. Green means **No alert triggered**, never a
 verified safe process. Coverage warnings have their own prominent indicator.
 Advanced tabs retain full fields and source identity for an experienced teammate.
 
@@ -326,3 +326,41 @@ rehearses harmless CCDC-style behaviors and writes detector evidence and a separ
 PASS/FAIL/BLOCKED result for each case. Review [TESTING.md](TESTING.md) before running.
 It creates and removes its own SYSTEM task, inert Run value and disabled lab account;
 it never attacks an external target, steals credentials or disables Defender.
+
+## Quiet detection defaults (version 2)
+
+PowerShell/CMD execution, an interpreter opening a socket, and WinRM/WMI ancestry
+alone are informational observations, not yellow alerts. The optional broad `shell`
+and `shell-network` hunting rules are disabled by default. Contextual alerts retain
+the specific reason: encoded/dynamic execution, recognized loading/tool patterns,
+persistence/account/sensor changes, or a web/SQL worker spawning an execution utility.
+A rule may include `AllOf: [{"Field":"Image","Pattern":"..."}]`; every additional
+condition must match, so an ordinary SQL maintenance child is not flagged as a shell.
+These are investigation leads, not proof of compromise or a complete correlation engine.
+
+Existing installation profiles are deliberately preserved. To opt into the four
+updated stock defaults after installing the new version, use elevated PowerShell:
+
+```powershell
+$root = "$env:ProgramData\CCDC-BlueTeam"
+$version = (Get-Content "$root\current-version.txt" -Raw).Trim()
+$path = "$root\profile.json"
+Copy-Item $path ($path+'.backup-'+[guid]::NewGuid().ToString('N'))
+$current = Get-Content $path -Raw | ConvertFrom-Json
+$defaults = Get-Content "$version\profile.default.json" -Raw | ConvertFrom-Json
+$ids = @('shell','shell-network','remote-parent','service-child')
+$current.Rules = @($current.Rules | Where-Object {$_.Id -notin $ids}) + @($defaults.Rules | Where-Object {$_.Id -in $ids})
+$current | Add-Member -NotePropertyName DetectionDefaultsVersion -NotePropertyValue 2 -Force
+$current | ConvertTo-Json -Depth 12 | Set-Content $path -Encoding UTF8
+```
+
+This explicitly replaces those four rule IDs, including any custom edits to them;
+other rule IDs, management addresses and scoring settings remain. Review the backup
+and restart the dashboard. Historical records retain the severity originally assigned.
+
+Wazuh can add central collection, rule correlation and fleet visibility when allowed
+competition infrastructure is available. It requires a manager/indexer/dashboard
+outside the Windows endpoint and still depends on agent telemetry and tuning. It
+does not make every PowerShell event malicious or guarantee visibility after a
+privileged attacker tampers with local sensors. The native GUI remains useful for
+local triage when a central deployment is unavailable or prohibited by event rules.
