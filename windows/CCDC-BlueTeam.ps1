@@ -262,7 +262,7 @@ Retest result from scoring portal:
         $profile=Read-CcdcProfile $ProfilePath
         $data=Join-Path $OutputDir 'Telemetry'
         Write-Host "Collecting into $data; detection only. Ctrl+C stops collection."
-        $directTime=[datetime]::MinValue;$persistenceTime=[datetime]::MinValue
+        $directTime=[datetime]::MinValue;$persistenceTime=[datetime]::MinValue;$registryTime=[datetime]::MinValue;$accountTime=[datetime]::MinValue
         while ($true) {
             $batch=Receive-CcdcBatch -DataDirectory $data -Profile $profile
             $directRows=@()
@@ -273,7 +273,19 @@ Retest result from scoring portal:
                 $direct.Health | Where-Object {$_ -match 'ERROR|UNAVAILABLE|not running'} | ForEach-Object {Write-Warning $_}
                 $directTime=Get-Date;if($includePersistence){$persistenceTime=Get-Date}
             }
-            foreach ($r in (@($batch.Records)+@($directRows))) {
+            $baselineRows=@()
+            if((Get-Date) -gt $registryTime.AddMinutes(15)){
+                $result=Receive-CcdcBaselineScopes -DataDirectory $data -Profile $profile -Scopes @(Get-CcdcRegistryScopes $profile)
+                $baselineRows+=@($result.Records);$result.Health | ForEach-Object {Write-Host $_};$registryTime=Get-Date
+            }
+            if((Get-Date) -gt $accountTime.AddSeconds(60)){
+                try{
+                    $result=Receive-CcdcBaselineScopes -DataDirectory $data -Profile $profile -Scopes @(Get-CcdcAccountScopes)
+                    $baselineRows+=@($result.Records);$result.Health | ForEach-Object {Write-Host $_}
+                }catch{Write-Warning ('Account enumeration unavailable: '+$_.Exception.Message)}
+                $accountTime=Get-Date
+            }
+            foreach ($r in (@($batch.Records)+@($directRows)+@($baselineRows))) {
                 $color=if($r.Severity -eq 'HIGH'){'Red'}elseif($r.Severity -eq 'REVIEW'){'Yellow'}else{'Gray'}
                 Write-Host ("{0} [{1}] {2} {3} PID {4} {5}" -f $r.Time,$r.Severity,$r.Kind,$r.Image,$r.ProcessId,$r.CommandLine) -ForegroundColor $color
             }

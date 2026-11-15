@@ -25,7 +25,7 @@ $temp=Join-Path ([IO.Path]::GetTempPath()) ('ccdc-direct-'+[guid]::NewGuid().ToS
 try{
     $null=Receive-CcdcDirectState $temp $p $old
     $null=Receive-CcdcDirectState $temp $p $now
-    Assert ((@(Get-CcdcHistory $temp) | Where-Object Kind -eq 'SENSOR').Count -eq 1) 'Independent observations not persisted'
+    Assert (@(Get-CcdcHistory $temp | Where-Object Kind -eq 'SENSOR').Count -eq 1) 'Independent observations not persisted'
     $failed=New-State @() @() ([pscustomobject]@{SysmonService='Stopped'})
     $failed.ProcessesAvailable=$false;$failed.PersistenceAvailable=$false
     $rows=@(Receive-CcdcDirectState $temp $p $failed)

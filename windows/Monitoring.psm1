@@ -334,3 +334,106 @@ function Receive-CcdcDirectState {
     }finally{if($lock){$lock.Dispose()}}
 }
 Export-ModuleMember -Function *-Ccdc*
+
+function Get-CcdcRegistryScopes {
+    param($Profile)
+    $paths=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
+        'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon','HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell',
+        'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa','HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options')
+    if($Profile.PSObject.Properties['RegistryPaths']){$paths=@($Profile.RegistryPaths)}
+    foreach($path in $paths){
+        $items=@();$errorText='';$ok=$true
+        try{
+            if(Test-Path -LiteralPath $path){
+                $keys=@(Get-Item -LiteralPath $path -ErrorAction Stop)+@(Get-ChildItem -LiteralPath $path -Recurse -ErrorAction Stop)
+                if($keys.Count -gt 10000){throw 'Scope exceeds 10000 keys; tune RegistryPaths to bound overhead'}
+                $items=@(foreach($key in $keys){
+                    [pscustomobject]@{Key=($key.Name+'|<KEY>');Value='Present'}
+                    foreach($name in $key.GetValueNames()){
+                        $value=$key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                        [pscustomobject]@{Key=($key.Name+'|'+$name);Value=(ConvertTo-Json -InputObject ([ordered]@{Type=[string]$key.GetValueKind($name);Data=$value}) -Compress -Depth 4)}
+                    }
+                })
+            }
+        }catch{$ok=$false;$errorText=$_.Exception.Message}
+        [pscustomobject]@{Name=('Registry '+$path);Kind='REGISTRY';Available=$ok;Items=$items;Error=$errorText}
+    }
+}
+function Get-CcdcAccountScopes {
+    $computer=Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+    if($computer.DomainRole -lt 4){
+        $ok=$true;$errorText='';$items=@()
+        try{$items=@(Get-CimInstance Win32_UserAccount -Filter 'LocalAccount=True' -ErrorAction Stop | ForEach-Object {
+            [pscustomobject]@{Key=[string]$_.SID;Value=(ConvertTo-Json -InputObject ([ordered]@{Name=$_.Name;Disabled=$_.Disabled;Domain=$_.Domain}) -Compress)}
+        })}catch{$ok=$false;$errorText=$_.Exception.Message}
+        [pscustomobject]@{Name='Local accounts';Kind='ACCOUNT';Available=$ok;Items=$items;Error=$errorText}
+    }
+    if($computer.PartOfDomain){
+        $ok=$true;$errorText='';$items=@();$searcher=$null;$found=$null;$directory=$null;$rootDse=$null
+        try{
+            $rootDse=New-Object DirectoryServices.DirectoryEntry('LDAP://RootDSE')
+            $dn=[string]$rootDse.Properties['defaultNamingContext'][0]
+            if(-not $dn){throw 'Current-domain naming context unavailable'}
+            $directory=New-Object DirectoryServices.DirectoryEntry('LDAP://'+$dn)
+            $searcher=New-Object DirectoryServices.DirectorySearcher($directory)
+            $searcher.Filter='(&(objectCategory=person)(objectClass=user))';$searcher.PageSize=500
+            $searcher.ServerTimeLimit=[timespan]::FromSeconds(10);$searcher.ClientTimeout=[timespan]::FromSeconds(15)
+            foreach($name in @('objectsid','samaccountname','whencreated','useraccountcontrol')){$null=$searcher.PropertiesToLoad.Add($name)}
+            $found=$searcher.FindAll()
+            $items=@(foreach($result in $found){
+                $sid=New-Object Security.Principal.SecurityIdentifier([byte[]]$result.Properties['objectsid'][0],0)
+                [pscustomobject]@{Key=$sid.Value;Value=(ConvertTo-Json -InputObject ([ordered]@{
+                    Name=[string]$result.Properties['samaccountname'][0];Created=[string]$result.Properties['whencreated'][0];Flags=[string]$result.Properties['useraccountcontrol'][0]
+                }) -Compress)}
+            })
+        }catch{$ok=$false;$errorText=$_.Exception.Message}
+        finally{foreach($resource in @($found,$searcher,$directory,$rootDse)){if($resource){$resource.Dispose()}}}
+        [pscustomobject]@{Name='Current-domain accounts';Kind='ACCOUNT';Available=$ok;Items=$items;Error=$errorText}
+    }
+}
+function Receive-CcdcBaselineScopes {
+    param([string]$DataDirectory,$Profile,[object[]]$Scopes)
+    $null=New-Item -ItemType Directory -Path $DataDirectory -Force
+    $rows=New-Object 'System.Collections.Generic.List[object]';$health=New-Object 'System.Collections.Generic.List[string]'
+    $lock=$null
+    try{
+        $lock=[IO.File]::Open((Join-Path $DataDirectory 'collector.lock'),'OpenOrCreate','ReadWrite','None')
+        foreach($scope in $Scopes){
+            if(-not $scope.Available){$health.Add($scope.Name+' UNAVAILABLE/ERROR: '+$scope.Error);continue}
+            $hash=[Security.Cryptography.SHA256]::Create()
+            try{$id=([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($scope.Name)))).Replace('-','')}finally{$hash.Dispose()}
+            $basePath=Join-Path $DataDirectory ('baseline-'+$id+'.json');$lastPath=Join-Path $DataDirectory ('observed-'+$id+'.json')
+            $now=@{};foreach($item in $scope.Items){$now[$item.Key]=[string]$item.Value}
+            if(-not(Test-Path $basePath)){
+                [IO.File]::WriteAllText($basePath,(ConvertTo-Json -InputObject @{Scope=$scope.Name;CapturedAt=[datetimeoffset]::UtcNow.ToString('o');Items=$now} -Depth 6))
+                $health.Add($scope.Name+': initial baseline saved; it is not asserted clean')
+            }else{
+                $baseline=Get-Content $basePath -Raw | ConvertFrom-Json
+                $before=@{}
+                $saved=if(Test-Path $lastPath){Get-Content $lastPath -Raw | ConvertFrom-Json}else{$baseline.Items}
+                foreach($prop in $saved.PSObject.Properties){$before[$prop.Name]=[string]$prop.Value}
+                foreach($key in @(@($now.Keys)+@($before.Keys) | Sort-Object -Unique)){
+                    if($before.ContainsKey($key) -eq $now.ContainsKey($key) -and $before[$key] -eq $now[$key]){continue}
+                    $original=$baseline.Items.PSObject.Properties[$key]
+                    $action=if(-not $before.ContainsKey($key)){'Added'}elseif(-not $now.ContainsKey($key)){'Removed'}else{'Changed'}
+                    $fields=@{Scope=$scope.Name;Object=$key;Change=$action;Before=$before[$key];After=$now[$key];Baseline=$(if($original){$original.Value}else{'Absent from first baseline'})}
+                    $r=New-CcdcObservation $scope.Kind ($action+' since last sample; compared with immutable first baseline') $fields $Profile
+                    $r.Severity='REVIEW'
+                    $r.Reasons=@($(if($scope.Kind -eq 'ACCOUNT'){'Account '+$action.ToLower()+': verify authorized team/scoring work. Account name is not proof of trust.'}else{'Registry '+$action.ToLower()+': inspect the original baseline and confirm an approved change.'}))
+                    $rows.Add($r)
+                }
+                $health.Add($scope.Name+': baseline comparison completed '+[datetimeoffset]::UtcNow.ToString('HH:mm:ss')+' UTC')
+            }
+            # Commit observations before updating the last-seen comparison state.
+            $scopeRows=@($rows | Where-Object {$_.Data.Scope -eq $scope.Name})
+            if($scopeRows.Count){
+                $journal=Join-Path $DataDirectory ('events-'+[datetime]::UtcNow.ToString('yyyyMMdd')+'.jsonl')
+                [IO.File]::AppendAllLines($journal,[string[]]@($scopeRows | ForEach-Object {ConvertTo-Json -InputObject $_ -Depth 8 -Compress}),(New-Object Text.UTF8Encoding($false)))
+            }
+            [IO.File]::WriteAllText(($lastPath+'.tmp'),(ConvertTo-Json -InputObject $now -Depth 4))
+            Move-Item -LiteralPath ($lastPath+'.tmp') -Destination $lastPath -Force
+        }
+    }finally{if($lock){$lock.Dispose()}}
+    [pscustomobject]@{Records=$rows.ToArray();Health=$health.ToArray()}
+}
+Export-ModuleMember -Function *-Ccdc*

@@ -249,3 +249,34 @@ These reinforce detection-only defaults and approved, reversible response. The l
 harness is for disposable test VMs, not the competition NETLAB environment. Do not
 publish team packets, credentials or private event-specific profiles; keep them out
 of source control. Follow the event's software/staging and outside-assistance rules.
+
+## First registry baseline and competition account additions
+
+The first successful snapshot of each configured registry scope is retained under
+`Evidence\Telemetry\baseline-*.json` and never replaced on restart/reinstall.
+The GUI and Watch compare those scopes every **15 minutes** while collection is
+running. Each change includes initial baseline, prior sample and new value; repeated
+unchanged drift does not create repeated alerts. A return to the original value is
+also recorded. Failed/unreadable scopes report coverage errors and preserve their
+last successful state. This is value/key comparison, not a registry restore tool.
+
+Default scopes recursively cover HKLM Run/RunOnce, Winlogon, PowerShell policy,
+LSA and Image File Execution Options. This is **not a complete registry hive backup**:
+loaded user hives, unrelated application keys and protected unreadable areas may be
+outside coverage. Add `RegistryPaths` (an array of registry-provider paths) to the
+profile to choose explicit scopes; each scope is capped at 10000 keys and fails
+visibly rather than silently truncating. Windows ACLs continue to govern reads.
+Service/task/HKLM startup snapshots also provide more frequent focused comparison.
+
+Local account SIDs are sampled every **60 seconds**; on domain-joined machines the
+current domain's user objects are queried through paged LDAP with timeouts. Domain
+controllers use the domain directory rather than pretending they have a normal
+local SAM. Each successful scope gets an immutable starting account list. A newly
+observed SID, including a service account, produces an amber review finding even
+without Event 4720. Account property changes and removals are recorded too. Normal
+Security account events still arrive between samples when auditing is available.
+A user created and deleted between samples can be missed if event telemetry is
+unavailable. A failed domain bind is a coverage warning, not an all-clear result.
+The tool never creates, enables, disables or removes competition accounts; only
+the explicitly opted-in disposable integration harness creates its own disabled
+lab user and removes it afterward.

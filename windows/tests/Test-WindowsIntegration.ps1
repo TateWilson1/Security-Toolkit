@@ -110,13 +110,37 @@ try {
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         }
     }
+    Test-Step 'Registry baseline drift and newly-created local account (no Event Log dependency)' {
+        $baselineData=Join-Path $ResultsDirectory 'baseline-telemetry'
+        $keyPath='HKLM:\SOFTWARE\CCDC-Lab-'+[guid]::NewGuid().ToString('N')
+        $userName='ccdc'+[guid]::NewGuid().ToString('N').Substring(0,12)
+        try{
+            $null=New-Item $keyPath
+            $null=New-ItemProperty $keyPath -Name LabValue -Value 'initial' -PropertyType String
+            $testProfile=Read-CcdcProfile (Join-Path $root 'profile.json')
+            $testProfile | Add-Member -NotePropertyName RegistryPaths -NotePropertyValue @($keyPath) -Force
+            $null=Receive-CcdcBaselineScopes $baselineData $testProfile @(Get-CcdcRegistryScopes $testProfile)
+            Set-ItemProperty $keyPath -Name LabValue -Value 'changed'
+            $registryResult=Receive-CcdcBaselineScopes $baselineData $testProfile @(Get-CcdcRegistryScopes $testProfile)
+            if(-not @($registryResult.Records | Where-Object {$_.Kind -eq 'REGISTRY' -and $_.Data.Change -eq 'Changed'}).Count){throw 'Native registry drift missing'}
+            $null=Receive-CcdcBaselineScopes $baselineData $testProfile @(Get-CcdcAccountScopes)
+            # Create only a unique DISABLED lab user; no privilege assignment or authentication.
+            $password=ConvertTo-SecureString ([guid]::NewGuid().ToString('N')+'aA!9') -AsPlainText -Force
+            $null=New-LocalUser -Name $userName -Password $password -Disabled -Description 'Disposable CCDC integration test'
+            $accountResult=Receive-CcdcBaselineScopes $baselineData $testProfile @(Get-CcdcAccountScopes)
+            if(-not @($accountResult.Records | Where-Object {$_.Kind -eq 'ACCOUNT' -and $_.Data.After -like "*$userName*"}).Count){throw 'Direct account addition missing'}
+        }finally{
+            Remove-Item -LiteralPath $keyPath -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
+        }
+    }
     Test-Step 'GUI startup, background collection, screenshot' {
         $report=Join-Path $ResultsDirectory 'gui.json'
         $process=Start-Process powershell.exe -ArgumentList ('-NoProfile -STA -ExecutionPolicy Bypass -File "'+(Join-Path $installed 'Dashboard.ps1')+'" -SmokeTestReport "'+$report+'"') -PassThru -RedirectStandardError (Join-Path $ResultsDirectory 'gui-errors.txt')
         if(-not $process.WaitForExit(60000)){Stop-Process -Id $process.Id;throw 'GUI test timed out'}
         if(-not (Test-Path $report)){throw 'GUI produced no report; inspect gui-errors.txt'}
         $gui=Get-Content $report -Raw | ConvertFrom-Json
-        if($gui.Batches -lt 1 -or $gui.Events -lt 1){throw 'GUI did not collect/replay events'}
+        if($gui.HadCollectionError -or $gui.Batches -lt 1 -or $gui.Events -lt 1){throw 'GUI did not collect/replay events'}
         if(@($gui.Health | Where-Object {$_ -match 'ERROR|UNAVAILABLE'}).Count){throw ('GUI source failures: '+($gui.Health -join '; '))}
     }
     Test-Step 'Evidence EVTX and hashes' {

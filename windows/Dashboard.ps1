@@ -398,7 +398,7 @@ $bAlerts.Add_Click({
 # All Windows queries and disk writes execute in a dedicated runspace. UI never waits
 # synchronously for a query. A single outstanding batch bounds memory under load.
 $worker=[powershell]::Create()
-$script:pending=$null;$script:first=$true;$script:batchCount=0;$script:lastHealth=@();$script:smokeStart=Get-Date
+$script:pending=$null;$script:first=$true;$script:batchCount=0;$script:hadCollectionError=$false;$script:lastHealth=@();$script:smokeStart=Get-Date
 $collect={
     param($base,$data,$profilePath,$first,$searchArchive,$archiveQuery)
     $ErrorActionPreference='Stop'
@@ -414,7 +414,19 @@ $collect={
         $directRows=@(Receive-CcdcDirectState -DataDirectory $data -Profile $profile -Snapshot $direct)
         $directTime=Get-Date;if($includePersistence){$persistenceTime=Get-Date}
     }
-    $extra=@($direct.Health)
+    $baselineRows=@();$baselineHealth=@()
+    if (-not (Get-Variable registryTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $registryTime.AddMinutes(15)) {
+        $registryResult=Receive-CcdcBaselineScopes -DataDirectory $data -Profile $profile -Scopes @(Get-CcdcRegistryScopes $profile)
+        $baselineRows+=@($registryResult.Records);$registryHealth=@($registryResult.Health);$registryTime=Get-Date
+    }
+    if (-not (Get-Variable accountTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $accountTime.AddSeconds(60)) {
+        try {
+            $accountsResult=Receive-CcdcBaselineScopes -DataDirectory $data -Profile $profile -Scopes @(Get-CcdcAccountScopes)
+            $baselineRows+=@($accountsResult.Records);$accountHealth=@($accountsResult.Health)
+        } catch {$accountHealth=@('Account enumeration UNAVAILABLE/ERROR: '+$_.Exception.Message)}
+        $accountTime=Get-Date
+    }
+    $extra=@($direct.Health)+@($registryHealth)+@($accountHealth)
     $tcpRows=@($direct.Connections | Select-Object -First 2000 | ForEach-Object {
         [pscustomobject]@{Local=('['+$_.LocalAddress+']:'+$_.LocalPort);Remote=('['+$_.RemoteAddress+']:'+$_.RemotePort)
             ProcessId=$_.ProcessId;Process=$_.Image;State=$_.State}
@@ -425,7 +437,7 @@ $collect={
         try {$defender=Get-MpComputerStatus -ErrorAction Stop | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureLastUpdated | Format-List | Out-String}
         catch {$defender='Defender unavailable: '+$_.Exception.Message}
     }
-    [pscustomobject]@{Records=@($history)+@($batch.Records)+@($directRows);Health=@($batch.Health)+$extra;Tcp=$tcpRows;Defender=$defender;Archive=$archive;ArchiveSearched=$searchArchive}
+    [pscustomobject]@{Records=@($history)+@($batch.Records)+@($directRows)+@($baselineRows);Health=@($batch.Health)+$extra;Tcp=$tcpRows;Defender=$defender;Archive=$archive;ArchiveSearched=$searchArchive}
 }
 $timer=New-Object System.Windows.Forms.Timer
 $timer.Interval=2000
@@ -465,11 +477,11 @@ $timer.Add_Tick({
                 $script:tcp.Rows.Clear()
                 foreach($c in $batch.Tcp){[void]$script:tcp.Rows.Add([object[]]@($c.Local,$c.Remote,[string]$c.ProcessId,$c.Process,$c.State))}
             }
-        } catch { $coverage.Text='MONITORING ERROR - investigate visibility before trusting a quiet screen';$coverage.ForeColor=$red;$script:status.Text='COLLECTION ERROR: '+$_.Exception.Message;$archiveButton.Enabled=$true }
+        } catch { $script:hadCollectionError=$true;$coverage.Text='MONITORING ERROR - investigate visibility before trusting a quiet screen';$coverage.ForeColor=$red;$script:status.Text='COLLECTION ERROR: '+$_.Exception.Message;$archiveButton.Enabled=$true }
         $script:pending=$null
     }
     if ($SmokeTestReport -and ((Get-Date)-$script:smokeStart).TotalSeconds -ge 20) {
-        [pscustomobject]@{Batches=$script:batchCount;Events=$script:count;Health=$script:lastHealth;Status=$script:status.Text;Rows=$script:eventGrid.Rows.Count} |
+        [pscustomobject]@{Batches=$script:batchCount;HadCollectionError=$script:hadCollectionError;Events=$script:count;Health=$script:lastHealth;Status=$script:status.Text;Rows=$script:eventGrid.Rows.Count} |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $SmokeTestReport -Encoding UTF8
         $bitmap=New-Object System.Drawing.Bitmap($form.Width,$form.Height)
         try {$form.DrawToBitmap($bitmap,$form.ClientRectangle);$bitmap.Save(($SmokeTestReport+'.png'))} finally {$bitmap.Dispose()}
