@@ -134,3 +134,49 @@ WinRM (recorded at REVIEW rather than HIGH), plus cleanup. Its account setup fai
 because the test description exceeded Windows' 48-character limit; this was shortened
 for the rerun. Earlier native account-addition integration had passed. The failing
 setup is not reported as a successful scenario.
+
+## Final independently reviewed code result
+
+[Run 43658855301](https://github.com/TateWilson1/Security-Toolkit/actions/runs/43658855301)
+tested code commit `e21a2efa2ecfdb93ba46fa73ef1f1c433b58ba9b` on Microsoft Windows
+Server 2022 Datacenter, build 20348, using Windows PowerShell 5.1:
+
+| Group | Actual result |
+|---|---|
+| Static/configuration/hash checks and four regression suites | PASS |
+| Native integration cases | 15/15 PASS |
+| Benign CCDC behavior checks | 8/8 PASS |
+| Simulation cleanup | PASS |
+| GUI background collection | 1756 records, no collection errors; 1200-row view cap |
+| Native firewall | Approved TCP/UDP rules, outbound destination-port filter, status and exact-name undo passed |
+| Existing localhost WinRM | Real wsmprovhost ancestry recorded at REVIEW; not labeled confirmed malicious |
+
+The rehearsal confirmed a short-lived encoded PowerShell command, decoded benign
+4104 content remaining INFO, local WMI-created CMD/WmiPrvSE ancestry, a real
+SYSTEM-owned task process remaining alertable, inert Run-key persistence detected
+by both direct comparison and Sysmon, a newly-created disabled local user, and
+localhost TCP activity. It used no external targets or actual malicious payloads.
+The corrected lab-user description succeeded. All unique test artifacts were removed.
+
+Both subagents independently reviewed the final evidence. The design reviewer
+confirmed readable Overview/Firewall/AD/Timeline/Health screenshots at 1024px, stable
+navigation/header layout and distinct Defender-off warning. The validation reviewer
+checked saved process observations and result JSON, not merely the workflow status.
+Artifacts are attached to the run as `ccdc-windows-2022-results` (14-day retention).
+
+Defender real-time protection was **inactive** on this runner, and the application
+reported that correctly. Its status check passing does not mean AV was enabled.
+The final short resource samples were approximately 260–296 MiB working set; they
+do not establish sustained resource use, leak freedom or busy-DC suitability.
+
+Remaining unverified work: Server 2019 runtime; actual AD/LDAP/Testimo assessment;
+remote Evil-WinRM client operation/attribution; domain/scoring authentication;
+interactive keyboard/click/confirmation acceptance; wall-clock 15-minute scheduling
+and a sustained DC load/retention test. Registry/account difference functions were
+invoked directly during the lab rehearsal rather than waiting through those full
+sampling intervals. Process killing, toolkit quarantine and automated containment
+remain unimplemented; manual scoped firewall controls are explicitly approved only.
+
+The final documentation/manifest commit does not change the reviewed monitoring,
+firewall or GUI code. Its associated CI reruns the pinned installer and rehearsal
+against that complete payload; use the latest PR checks for that revision's result.
