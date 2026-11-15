@@ -104,7 +104,7 @@ function Undo-CcdcFirewallRule {
 }
 Export-ModuleMember -Function *-Ccdc*
 function Get-CcdcFirewallStatus {
-    $profiles=@(Get-NetFirewallProfile -ErrorAction Stop | Select-Object Name,Enabled,DefaultInboundAction,DefaultOutboundAction)
+    $profiles=@(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop | Select-Object Name,Enabled,DefaultInboundAction,DefaultOutboundAction)
     $rules=@(Get-NetFirewallRule -Name 'CCDC-Toolkit-*' -PolicyStore PersistentStore -ErrorAction SilentlyContinue | Select-Object -First 100 | ForEach-Object {
         $rule=$_;$ports=Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop
         $addresses=Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop

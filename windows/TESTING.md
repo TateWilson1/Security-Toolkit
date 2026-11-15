@@ -9,6 +9,9 @@ Development host: Linux x86_64, November 14, 2026. Portable checks use PowerShel
 ./windows/tests/Update-Manifest.ps1 # after any payload edit, commit updated manifest
 ./windows/tests/Test-Static.ps1
 ./windows/tests/Test-Monitoring.ps1
+./windows/tests/Test-DirectState.ps1
+./windows/tests/Test-Baselines.ps1
+./windows/tests/Test-Firewall.ps1
 ```
 
 Portable regression suite exercises XML escaping, process/parent GUIDs and PIDs,
@@ -121,3 +124,13 @@ Latest revisions add outbound destination-port and IPv6 management-address check
 all-tab screenshots, novice-oriented design refinements and benign simulation.
 Their final results are available in the PR's latest Actions run. The recorded
 commit-specific results above should not be interpreted as testing later code.
+
+[Run 43658254354](https://github.com/TateWilson1/Security-Toolkit/actions/runs/43658254354),
+commit `a12e6b4`, passed static/regression checks and all 15 integration cases,
+including outbound remote-port filtering, GUI design changes and all-tab screenshots.
+The first behavior rehearsal passed encoded PowerShell, actual 4104 content, WMI
+ancestry, SYSTEM task, Run-key persistence, localhost TCP and existing localhost
+WinRM (recorded at REVIEW rather than HIGH), plus cleanup. Its account setup failed
+because the test description exceeded Windows' 48-character limit; this was shortened
+for the rerun. Earlier native account-addition integration had passed. The failing
+setup is not reported as a successful scenario.

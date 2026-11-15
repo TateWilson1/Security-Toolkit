@@ -143,7 +143,7 @@ $fwRemote=New-Object System.Windows.Forms.TextBox;$fwRemote.Text='Any';$fwRemote
 New-FirewallLabel 'Direction' 100
 $fwDirection=New-Object System.Windows.Forms.ComboBox;$fwDirection.DropDownStyle='DropDownList';$fwDirection.Width=100
 $fwDirection.Items.AddRange([object[]]@('Inbound','Outbound'));$fwDirection.SelectedIndex=0;$script:fwFieldPanel.Controls.Add($fwDirection);$fwDirection.Dock='Bottom'
-New-FirewallLabel 'Windows network profile' 155
+New-FirewallLabel 'Network profile' 155
 $fwNetwork=New-Object System.Windows.Forms.ComboBox;$fwNetwork.DropDownStyle='DropDownList';$fwNetwork.Width=95
 $fwNetwork.Items.AddRange([object[]]@('Any','Domain','Private','Public'));$fwNetwork.SelectedIndex=0;$script:fwFieldPanel.Controls.Add($fwNetwork);$fwNetwork.Dock='Bottom'
 $fwApply=New-Object System.Windows.Forms.Button;$fwApply.Text='Review and apply';$fwApply.AutoSize=$true;$fwPanel.Controls.Add($fwApply)
@@ -201,6 +201,8 @@ Scoring can legitimately use WinRM and PowerShell. Confirm changes with a teamma
 Reports open in the local browser and are saved under Evidence\AD.
 These assessments are on demand; they are not continuous AD change monitoring.
 '@
+$adText.Text=$adText.Text -replace '\r?\n',[Environment]::NewLine
+$adText.Add_Enter({$adText.DeselectAll()})
 $adButtons=New-Object System.Windows.Forms.FlowLayoutPanel
 $adButtons.Dock='Top';$adButtons.Height=48
 foreach($label in @('Quick AD overview','Run focused Testimo checks')){
@@ -235,6 +237,7 @@ $tTree.Controls.Add($tree)
 $healthBox=New-Object System.Windows.Forms.TextBox
 $healthBox.Dock='Fill';$healthBox.Multiline=$true;$healthBox.ReadOnly=$true;$healthBox.ScrollBars='Both'
 $healthBox.BackColor=$bg;$healthBox.ForeColor=$fg
+$healthBox.Add_Enter({$healthBox.DeselectAll()})
 $tHealth.Controls.Add($healthBox)
 function Set-Grid($g) {
     $g.Dock='Fill';$g.BackgroundColor=$bg;$g.GridColor=$surface
@@ -369,6 +372,8 @@ Windows Defender Antivirus is a separate prevention layer.
 If its real-time protection is ACTIVE, it can quarantine malware
 that it recognizes. This GUI does not trigger quarantine itself.
 '@
+$instructions.Text=$instructions.Text -replace '\r?\n',[Environment]::NewLine
+$instructions.Add_Enter({$instructions.DeselectAll()})
 $instructions.AppendText(([Environment]::NewLine+'CURRENT PROFILE GUARDRAILS'+[Environment]::NewLine+($profile.Safeguards -join [Environment]::NewLine)))
 $instructions.AppendText(([Environment]::NewLine+($profile.ScoredServices | Format-Table Role,Service,Protocol,Port,Check -AutoSize | Out-String -Width 150)))
 $tNotes.Controls.Add($instructions)
@@ -408,7 +413,7 @@ function Show-Recent {
         $overviewGrid.Rows[$i].DefaultCellStyle.ForeColor=if($r.Severity -eq 'HIGH'){$red}else{$amber}
     }
     $needle=$search.Text
-    foreach ($r in ($script:recent | Sort-Object Time,Channel,RecordId)) {
+    foreach ($r in ($script:recent | Sort-Object @{Expression='Time';Descending=$true},Channel,RecordId)) {
         if ($script:onlyAlerts -and $r.Severity -eq 'INFO') { continue }
         $details=ConvertTo-Json -InputObject $r -Depth 8
         if ($needle -and $details.IndexOf($needle,[StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
@@ -565,6 +570,7 @@ $timer.Add_Tick({
                 $fwGrid.Rows.Clear()
                 foreach($rule in $batch.Firewall.Rules){$i=$fwGrid.Rows.Add([object[]]@($rule.Action,$rule.Direction,$rule.Ports,$rule.Protocol,$rule.Remote,$rule.Profile,$rule.Enabled));$fwGrid.Rows[$i].Tag=$rule.Name}
                 $fwStatus.Text=($batch.Firewall.Profiles | ForEach-Object {$_.Name+': enabled='+$_.Enabled+'; default inbound='+$_.DefaultInboundAction+'; default outbound='+$_.DefaultOutboundAction}) -join [Environment]::NewLine
+                if(@($batch.Firewall.Rules).Count -eq 0){$fwStatus.AppendText(([Environment]::NewLine+'No toolkit rules yet. Choose a service or IP/port above to review a change.'))}
                 $fwStatus.AppendText(([Environment]::NewLine+$script:lastFirewallResult+[Environment]::NewLine+'Toolkit rules shown (cap 100). Existing/GPO rules can override these. Verify remote access and live scoring.'))
             }elseif($batch.FirewallHealth){$fwStatus.Text='Firewall status unavailable: '+$batch.FirewallHealth}
             foreach ($r in $batch.Records) {
@@ -601,7 +607,7 @@ $timer.Add_Tick({
             $form.DrawToBitmap($bitmap,$form.ClientRectangle);$bitmap.Save(($SmokeTestReport+'.png'))
             $tabIndex=0
             foreach($tab in $tabs.TabPages){
-                $tabs.SelectedTab=$tab;$form.Refresh()
+                $tabs.SelectedTab=$tab;$adText.DeselectAll();$healthBox.DeselectAll();$instructions.DeselectAll();$form.Refresh()
                 $form.DrawToBitmap($bitmap,$form.ClientRectangle);$bitmap.Save(($SmokeTestReport+'.tab-'+$tabIndex+'.png'));$tabIndex++
             }
         } finally {$bitmap.Dispose()}

@@ -14,6 +14,14 @@
 6. Run available checks, then inspect Windows VM capabilities. Record actual results
    and blocked tests; open a draft PR without merging if Server testing is blocked.
 
-Response safety: detection only. No firewall, account, service, quarantine or host
-isolation actions. Defender remains independent. Future responses require a separate
-reviewed implementation; see README for approval and recovery requirements.
+Response safety: monitoring never initiates containment. The later operator-requested
+firewall panel adds only manually approved scoped rules, protected-service/address
+checks, pre-change recovery records and exact-name undo. No automated account,
+service, quarantine or host-isolation actions are implemented. Defender remains
+independent. See README for approval and recovery requirements.
+
+Expanded scope completed after operator feedback: direct process/socket and persistence
+observations independent of Event Logs; immutable 15-minute scoped registry and
+60-second account baselines; context-sensitive WinRM leads; optional focused Testimo
+adapter; novice triage view; independent design and validation subagent reviews;
+benign CCDC behavior rehearsal in disposable Server 2022 CI.

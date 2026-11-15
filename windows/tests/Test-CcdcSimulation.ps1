@@ -147,7 +147,7 @@ try{
         $null=Receive-CcdcBaselineScopes $data $profile $before
         Assert-Simulation (-not(Get-LocalUser -Name $userName -ErrorAction SilentlyContinue)) 'Unique user name unexpectedly exists.'
         $password=ConvertTo-SecureString ([guid]::NewGuid().ToString('N')+'aA!9') -AsPlainText -Force
-        $null=New-LocalUser -Name $userName -Password $password -Disabled -Description 'Disposable CCDC simulation; never enabled or privileged'
+        $null=New-LocalUser -Name $userName -Password $password -Disabled -Description 'CCDC lab; disabled, no privileges'
         $script:userCreated=$true
         $result=Receive-CcdcBaselineScopes $data $profile @(Get-CcdcAccountScopes)
         $changes=@($result.Records | Where-Object {$_.Kind -eq 'ACCOUNT' -and $_.User -eq $userName -and $_.Severity -eq 'REVIEW'})
