@@ -1,8 +1,9 @@
 # CCDC Windows monitoring
 
 Native Windows PowerShell 5.1 / WinForms monitoring for **x64 Server 2022 and
-2019** (Desktop Experience for the GUI). Detection only: no account changes,
-firewall changes, process termination, file quarantine or automatic containment.
+2019** (Desktop Experience for the GUI). Monitoring never triggers automatic
+containment. Optional manual firewall controls require explicit approval; no
+account changes, process termination or toolkit file quarantine are performed.
 Defender Antivirus operates independently. Runtime verification status is in
 [TESTING.md](TESTING.md); rehearse before using this on scored infrastructure.
 
@@ -158,7 +159,7 @@ policy. Busy DCs need a soak test and appropriately tuned Sysmon rules.
 | Action | Current behavior | Requirement before implementation |
 |---|---|---|
 | Kill process | No action | Explicit approval for a GUID + current PID lifetime, evidence first, protected-service checks |
-| Block IP | No action | Explicit address/port-scoped approval, expiring rule, removal command, verify scoring |
+| Block IP/port | Manual scoped firewall panel, explicit approval, recovery record and undo | Recheck scoring; no automatic expiration or blocking |
 | Quarantine file | No toolkit quarantine | Copy/hash/ACL-protected manifest, original path/ACL and restore verification; avoid service binaries |
 | Persistence response | Record supported events | Export original task/service/registry state, exact approved change and recovery |
 | Defender | Show status; AV handles its own policy | Use native Defender quarantine and `MpCmdRun -Restore -ListAll` / approved restore workflow |
@@ -245,7 +246,7 @@ for another competition: the current team portal/injects determine scored servic
 Packet rules also call for generally reachable public services (no scorer-only
 allowlists), preserved ICMP and assigned names/addresses, free/open-source tools
 without trials, no workstation repurposing, and no competition snapshot reversion.
-These reinforce detection-only defaults and approved, reversible response. The lab
+These reinforce passive monitoring defaults and approved, reversible response. The lab
 harness is for disposable test VMs, not the competition NETLAB environment. Do not
 publish team packets, credentials or private event-specific profiles; keep them out
 of source control. Follow the event's software/staging and outside-assistance rules.
@@ -282,3 +283,36 @@ unavailable. A failed domain bind is a coverage warning, not an all-clear result
 The tool never creates, enables, disables or removes competition accounts; only
 the explicitly opted-in disposable integration harness creates its own disabled
 lab user and removes it afterward.
+
+## Simple Windows Firewall controls (2019 / 2022)
+
+The **Firewall controls** tab offers service presets, Allow/Block, TCP/UDP/Both,
+explicit ports, remote IP, direction and Windows network profile. Examples:
+
+- **Allow DNS** selects port 53 and creates both TCP and UDP rules after approval.
+- **Block SSH** selects TCP 22; choose Any remote address or one identified IP.
+- **Block one IP** uses the Specific IP preset and TCP/UDP, or limits that address
+  to explicit ports. It does not silently disable ICMP or change a profile default.
+
+Every change has a review/confirmation dialog and a recovery record saved before
+mutation in `Evidence\Firewall`. The GUI applies it in the background and reports
+success/failure inline. Undo removes one selected toolkit rule; both-transport
+changes have two named rules, so undo each if needed. Existing Windows/GPO rules
+are displayed through their profile status but are not bulk edited/reset. The rule
+list is limited to the first 100 toolkit-created rules. Each toolkit rule has its
+exact unique name in the recovery record.
+
+Broad blocking of a protected/scored port is refused. On detected domain controllers,
+AD authentication/directory/RPC ports are protected too, including dynamic RPC
+ports 49152 and above. A specific attacker IP can be scoped after explicit scoring
+risk acknowledgement; management/scoring addresses in the profile cannot be blocked
+through this control. Own-host/loopback and invalid targets are rejected. There is
+no global block-all, disable-firewall or reset button. If the profile omits a required
+service, the software cannot infer that event's scoring dependencies: verify it first.
+
+These are native **NetSecurity** rules, not Palo Alto ordered policies. Windows
+explicit block rules take precedence over allow rules. Adding Allow DNS cannot
+cancel an existing explicit DNS block; centralized GPO can also prevent local rules
+from taking effect. Verify the live scoring portal and remote authenticated service
+access after each change. This version does not claim a local rule proves effective
+network reachability or automatically remove rules after a timer.

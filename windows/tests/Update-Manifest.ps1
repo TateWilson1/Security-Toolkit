@@ -2,7 +2,7 @@
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $hashes=[ordered]@{}
-foreach($name in @('AD-Assessment.ps1','CCDC-BlueTeam.ps1','Dashboard.ps1','Monitoring.psm1','ccdc-sysmon.xml','profile.default.json','README.md','CCDC-Playbook.md','Install.ps1','TESTING.md')) {
+foreach($name in @('Firewall.ps1','Firewall.psm1','AD-Assessment.ps1','CCDC-BlueTeam.ps1','Dashboard.ps1','Monitoring.psm1','ccdc-sysmon.xml','profile.default.json','README.md','CCDC-Playbook.md','Install.ps1','TESTING.md')) {
     $hashes[$name]=(Get-FileHash (Join-Path $root $name) -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 [IO.File]::WriteAllText((Join-Path $root 'manifest.json'),(($hashes | ConvertTo-Json)+[Environment]::NewLine),(New-Object Text.UTF8Encoding($false)))

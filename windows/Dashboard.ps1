@@ -1,6 +1,6 @@
 #requires -Version 5.1
 # CCDC Windows Server dashboard. Uses Sysmon + Windows Event Logs + live TCP snapshots.
-# Read-only: no automatic blocking or quarantine of suspicious commands.
+# Monitoring never triggers containment. Firewall changes require explicit operator approval.
 [CmdletBinding()]
 param(
     [string]$DataDirectory = (Join-Path $env:ProgramData 'CCDC-BlueTeam\Evidence\Telemetry'),
@@ -10,6 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path $ProfilePath)) { $ProfilePath=Join-Path $PSScriptRoot 'profile.default.json' }
 Import-Module (Join-Path $PSScriptRoot 'Monitoring.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Firewall.psm1') -Force
 $profile=Read-CcdcProfile $ProfilePath
 $myPath = $MyInvocation.MyCommand.Path
 $p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -111,6 +112,64 @@ $overviewText.BackColor=$bg;$overviewText.ForeColor=$fg;$overviewText.Font=[Syst
 $overviewText.Text='Choose an item above. Start with red, then amber. Read why it was flagged and check with a teammate before responding.'
 $overviewSplit.Panel1.Controls.Add($overviewGrid);$overviewSplit.Panel2.Controls.Add($overviewText)
 $tOverview.Controls.Add($overviewSplit);$tOverview.Controls.Add($overviewPanel)
+$tFirewall=New-Tab 'Firewall controls'
+$fwPanel=New-Object System.Windows.Forms.FlowLayoutPanel
+$fwPanel.Dock='Top';$fwPanel.Height=150;$fwPanel.AutoScroll=$true
+$fwPanel.ForeColor=$fg
+function New-FirewallLabel([string]$text){$l=New-Object System.Windows.Forms.Label;$l.Text=$text;$l.AutoSize=$true;$l.Margin=[System.Windows.Forms.Padding]::new(8,10,3,3);$fwPanel.Controls.Add($l)}
+New-FirewallLabel 'Service'
+$fwPreset=New-Object System.Windows.Forms.ComboBox;$fwPreset.DropDownStyle='DropDownList';$fwPreset.Width=180
+$fwPresets=@(Get-CcdcFirewallPresets);foreach($p in $fwPresets){[void]$fwPreset.Items.Add($p.Name)};$fwPanel.Controls.Add($fwPreset)
+New-FirewallLabel 'Action'
+$fwAction=New-Object System.Windows.Forms.ComboBox;$fwAction.DropDownStyle='DropDownList';$fwAction.Width=80
+$fwAction.Items.AddRange([object[]]@('Allow','Block'));$fwAction.SelectedIndex=0;$fwPanel.Controls.Add($fwAction)
+New-FirewallLabel 'Ports'
+$fwPorts=New-Object System.Windows.Forms.TextBox;$fwPorts.Width=100;$fwPanel.Controls.Add($fwPorts)
+New-FirewallLabel 'Protocol'
+$fwProtocol=New-Object System.Windows.Forms.ComboBox;$fwProtocol.DropDownStyle='DropDownList';$fwProtocol.Width=80
+$fwProtocol.Items.AddRange([object[]]@('TCP','UDP','Both'));$fwProtocol.SelectedIndex=0;$fwPanel.Controls.Add($fwProtocol)
+New-FirewallLabel 'Remote IP (or Any)'
+$fwRemote=New-Object System.Windows.Forms.TextBox;$fwRemote.Text='Any';$fwRemote.Width=160;$fwPanel.Controls.Add($fwRemote)
+New-FirewallLabel 'Direction'
+$fwDirection=New-Object System.Windows.Forms.ComboBox;$fwDirection.DropDownStyle='DropDownList';$fwDirection.Width=100
+$fwDirection.Items.AddRange([object[]]@('Inbound','Outbound'));$fwDirection.SelectedIndex=0;$fwPanel.Controls.Add($fwDirection)
+New-FirewallLabel 'Windows network profile'
+$fwNetwork=New-Object System.Windows.Forms.ComboBox;$fwNetwork.DropDownStyle='DropDownList';$fwNetwork.Width=95
+$fwNetwork.Items.AddRange([object[]]@('Any','Domain','Private','Public'));$fwNetwork.SelectedIndex=0;$fwPanel.Controls.Add($fwNetwork)
+$fwApply=New-Object System.Windows.Forms.Button;$fwApply.Text='Review and apply';$fwApply.AutoSize=$true;$fwPanel.Controls.Add($fwApply)
+$fwUndo=New-Object System.Windows.Forms.Button;$fwUndo.Text='Undo selected toolkit rule';$fwUndo.AutoSize=$true;$fwPanel.Controls.Add($fwUndo)
+$fwPreset.Add_SelectedIndexChanged({$preset=$fwPresets[$fwPreset.SelectedIndex];$fwPorts.Text=$preset.Ports;$fwProtocol.SelectedItem=$preset.Protocol})
+$fwPreset.SelectedIndex=0
+$fwStatus=New-Object System.Windows.Forms.TextBox
+$fwStatus.Dock='Bottom';$fwStatus.Height=125;$fwStatus.Multiline=$true;$fwStatus.ReadOnly=$true
+$fwStatus.BackColor=$bg;$fwStatus.ForeColor=$fg;$fwStatus.ScrollBars='Vertical'
+$fwStatus.Text='No firewall changes occur until you review and explicitly approve a rule. Existing block rules take precedence over allow rules. Verify remote scoring after each change.'
+$fwGrid=New-Object System.Windows.Forms.DataGridView
+$fwGrid.Dock='Fill';$fwGrid.ReadOnly=$true;$fwGrid.AllowUserToAddRows=$false;$fwGrid.SelectionMode='FullRowSelect';$fwGrid.MultiSelect=$false
+$fwGrid.AutoSizeColumnsMode='Fill';$fwGrid.RowHeadersVisible=$false
+foreach($name in @('Action','Direction','Ports','Protocol','Remote','Profile','Enabled')){[void]$fwGrid.Columns.Add($name,$name)}
+$tFirewall.Controls.Add($fwGrid);$tFirewall.Controls.Add($fwStatus);$tFirewall.Controls.Add($fwPanel)
+$script:firewallRequest=$null
+$fwApply.Add_Click({
+    try{
+        $fresh=Read-CcdcProfile $ProfilePath
+        $plan=New-CcdcFirewallPlan -Action $fwAction.SelectedItem -Ports $fwPorts.Text -RemoteAddress $fwRemote.Text -Protocol $fwProtocol.SelectedItem -Direction $fwDirection.SelectedItem -NetworkProfile $fwNetwork.SelectedItem -Role $script:role -Profile $fresh
+        $message=$plan.Summary+[Environment]::NewLine+'This changes Windows Firewall on this server. Existing block rules may override Allow.'
+        if($plan.ScoringRisk){$message+=[Environment]::NewLine+'SCORING RISK: confirm required services, management/scoring addresses and recovery before proceeding.'}
+        $message+=[Environment]::NewLine+'Apply this scoped change? Verify live scoring immediately afterward.'
+        if([System.Windows.Forms.MessageBox]::Show($message,'Approve firewall change','YesNo','Warning') -ne 'Yes'){return}
+        $script:firewallRequest=[pscustomobject]@{Mode='Add';Action=$plan.Action;Ports=($plan.Ports -join ',');RemoteAddress=$plan.RemoteAddress
+            Protocol=[string]$fwProtocol.SelectedItem;Direction=$plan.Direction;NetworkProfile=$plan.NetworkProfile;Role=$script:role}
+        $fwApply.Enabled=$false;$fwUndo.Enabled=$false;$fwStatus.Text='Applying the approved rule. Recovery is saved under Evidence\Firewall.'
+    }catch{[void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Rule was not applied','OK','Warning')}
+})
+$fwUndo.Add_Click({
+    if(-not $fwGrid.CurrentRow -or -not $fwGrid.CurrentRow.Tag){return}
+    $name=[string]$fwGrid.CurrentRow.Tag
+    if([System.Windows.Forms.MessageBox]::Show(('Remove only rule '+$name+'? Existing Windows rules will remain. Recheck scoring afterward.'),'Approve undo','YesNo','Warning') -ne 'Yes'){return}
+    $script:firewallRequest=[pscustomobject]@{Mode='Undo';Name=$name}
+    $fwApply.Enabled=$false;$fwUndo.Enabled=$false;$fwStatus.Text='Undoing the approved toolkit rule.'
+})
 $tAd=New-Tab 'Active Directory'
 $adText=New-Object System.Windows.Forms.TextBox
 $adText.Dock='Fill';$adText.Multiline=$true;$adText.ReadOnly=$true;$adText.BackColor=$bg;$adText.ForeColor=$fg
@@ -278,8 +337,9 @@ Capture first, respond second:
   4. Contain ONLY confirmed malicious process/file/IP
   5. Recheck scored service in current Team Portal after every change
 
-Nothing here auto-disables users, blocks hosts, kills shells, or
-modifies firewall, DNS, SQL, or WinRM settings.
+Monitoring never disables users, blocks hosts or kills shells.
+Firewall controls apply only explicitly approved manual rules.
+DNS, SQL and WinRM settings are not changed by monitoring.
 
 Sysmon Event 1 = process creation (parent, command line)
 Sysmon Event 3 = network connection; event 5 = process exit
@@ -401,10 +461,30 @@ $bAlerts.Add_Click({
 $worker=[powershell]::Create()
 $script:pending=$null;$script:first=$true;$script:batchCount=0;$script:hadCollectionError=$false;$script:collectionErrors=New-Object 'System.Collections.Generic.List[string]';$script:lastHealth=@();$script:smokeStart=Get-Date
 $collect={
-    param($base,$data,$profilePath,$first,$searchArchive,$archiveQuery)
+    param($base,$data,$profilePath,$first,$searchArchive,$archiveQuery,$firewallRequest)
     $ErrorActionPreference='Stop'
     Import-Module (Join-Path $base 'Monitoring.psm1')
     $profile=Read-CcdcProfile $profilePath
+    Import-Module (Join-Path $base 'Firewall.psm1')
+    $firewallResult=''
+    if($firewallRequest){
+        try{
+            $fwEvidence=Join-Path (Split-Path $data -Parent) 'Firewall'
+            if($firewallRequest.Mode -eq 'Undo'){
+                Undo-CcdcFirewallRule -Name $firewallRequest.Name -EvidenceDirectory $fwEvidence -Approved
+                $firewallResult='Removed toolkit rule '+$firewallRequest.Name+'. Recheck live scoring.'
+            }else{
+                $plan=New-CcdcFirewallPlan -Action $firewallRequest.Action -Ports $firewallRequest.Ports -RemoteAddress $firewallRequest.RemoteAddress -Protocol $firewallRequest.Protocol -Direction $firewallRequest.Direction -NetworkProfile $firewallRequest.NetworkProfile -Role $firewallRequest.Role -Profile $profile
+                if($plan.Action -eq 'Block' -and $plan.RemoteAddress -ne 'Any' -and @(Get-NetIPAddress | Where-Object IPAddress -eq $plan.RemoteAddress).Count){throw 'Refusing to block this server own address'}
+                $applied=Invoke-CcdcFirewallPlan -Plan $plan -EvidenceDirectory $fwEvidence -Approved -AcknowledgeScoringRisk
+                $firewallResult='APPLIED: '+$applied.Summary+'. Recovery: '+$applied.Evidence+'. Recheck live scoring.'
+            }
+        }catch{$firewallResult='FIREWALL ACTION FAILED: '+$_.Exception.Message}
+    }
+    if($firewallRequest -or -not(Get-Variable firewallTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $firewallTime.AddSeconds(15)){
+        try{$firewall=Get-CcdcFirewallStatus;$firewallHealth=''}catch{$firewall=$null;$firewallHealth=$_.Exception.Message}
+        $firewallTime=Get-Date
+    }
     $history=@();if($first){$history=@(Get-CcdcHistory $data)}
     $archive=@();if($searchArchive){$archive=@(Get-CcdcHistory -DataDirectory $data -Query $archiveQuery)}
     $batch=Receive-CcdcBatch -DataDirectory $data -Profile $profile
@@ -438,7 +518,7 @@ $collect={
         try {$defender=Get-MpComputerStatus -ErrorAction Stop | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureLastUpdated | Format-List | Out-String}
         catch {$defender='Defender unavailable: '+$_.Exception.Message}
     }
-    [pscustomobject]@{Records=@($history)+@($batch.Records)+@($directRows)+@($baselineRows);Health=@($batch.Health)+$extra;Tcp=$tcpRows;Defender=$defender;Archive=$archive;ArchiveSearched=$searchArchive}
+    [pscustomobject]@{Records=@($history)+@($batch.Records)+@($directRows)+@($baselineRows);Health=@($batch.Health)+$extra;Tcp=$tcpRows;Defender=$defender;Archive=$archive;ArchiveSearched=$searchArchive;Firewall=$firewall;FirewallResult=$firewallResult;FirewallHealth=$firewallHealth}
 }
 $timer=New-Object System.Windows.Forms.Timer
 $timer.Interval=2000
@@ -459,6 +539,13 @@ $timer.Add_Tick({
                 }
                 $archiveButton.Enabled=$true;$archiveButton.Text='Search complete history (latest 1200 matches)'
             }
+            if($batch.FirewallResult){$script:lastFirewallResult=$batch.FirewallResult;$fwApply.Enabled=$true;$fwUndo.Enabled=$true}
+            if($batch.Firewall){
+                $fwGrid.Rows.Clear()
+                foreach($rule in $batch.Firewall.Rules){$i=$fwGrid.Rows.Add([object[]]@($rule.Action,$rule.Direction,$rule.Ports,$rule.Protocol,$rule.Remote,$rule.Profile,$rule.Enabled));$fwGrid.Rows[$i].Tag=$rule.Name}
+                $fwStatus.Text=($batch.Firewall.Profiles | ForEach-Object {$_.Name+': enabled='+$_.Enabled+'; default inbound='+$_.DefaultInboundAction+'; default outbound='+$_.DefaultOutboundAction}) -join [Environment]::NewLine
+                $fwStatus.AppendText(([Environment]::NewLine+$script:lastFirewallResult+[Environment]::NewLine+'Toolkit rules shown (cap 100). Existing/GPO rules can override these. Verify remote access and live scoring.'))
+            }elseif($batch.FirewallHealth){$fwStatus.Text='Firewall status unavailable: '+$batch.FirewallHealth}
             foreach ($r in $batch.Records) {
                 if (-not $script:seen.Add($r.Key)) { continue }
                 $script:recent.Add($r);$script:count++
@@ -480,7 +567,7 @@ $timer.Add_Tick({
                 $script:tcp.Rows.Clear()
                 foreach($c in $batch.Tcp){[void]$script:tcp.Rows.Add([object[]]@($c.Local,$c.Remote,[string]$c.ProcessId,$c.Process,$c.State))}
             }
-        } catch { $script:hadCollectionError=$true;$script:collectionErrors.Add(($_.Exception.Message+' '+$_.ScriptStackTrace));$coverage.Text='MONITORING ERROR - investigate visibility before trusting a quiet screen';$coverage.ForeColor=$red;$script:status.Text='COLLECTION ERROR: '+$_.Exception.Message;$archiveButton.Enabled=$true }
+        } catch { $script:hadCollectionError=$true;$fwApply.Enabled=$true;$fwUndo.Enabled=$true;$script:collectionErrors.Add(($_.Exception.Message+' '+$_.ScriptStackTrace));$coverage.Text='MONITORING ERROR - investigate visibility before trusting a quiet screen';$coverage.ForeColor=$red;$script:status.Text='COLLECTION ERROR: '+$_.Exception.Message;$archiveButton.Enabled=$true }
         $script:pending=$null
     }
     if ($SmokeTestReport -and ((Get-Date)-$script:smokeStart).TotalSeconds -ge 20) {
@@ -491,8 +578,8 @@ $timer.Add_Tick({
         $form.Close();return
     }
     $worker.Commands.Clear();$worker.Streams.Error.Clear()
-    [void]$worker.AddScript($collect.ToString(),$false).AddArgument($script:base).AddArgument($DataDirectory).AddArgument($ProfilePath).AddArgument($script:first).AddArgument($script:archiveRequested).AddArgument($archiveSearch.Text)
-    $script:pending=$worker.BeginInvoke();$script:archiveRequested=$false
+    [void]$worker.AddScript($collect.ToString(),$false).AddArgument($script:base).AddArgument($DataDirectory).AddArgument($ProfilePath).AddArgument($script:first).AddArgument($script:archiveRequested).AddArgument($archiveSearch.Text).AddArgument($script:firewallRequest)
+    $script:pending=$worker.BeginInvoke();$script:archiveRequested=$false;$script:firewallRequest=$null
 })
 $form.Add_Shown({$timer.Start()})
 $form.Add_FormClosing({$timer.Stop();$timer.Dispose();$worker.Stop();$worker.Dispose()})

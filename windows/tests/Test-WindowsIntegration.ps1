@@ -134,6 +134,21 @@ try {
             Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
         }
     }
+    Test-Step 'Approved scoped firewall rule and undo (Windows NetSecurity)' {
+        Import-Module (Join-Path $installed 'Firewall.psm1') -Force
+        $plan=New-CcdcFirewallPlan -Action Block -Ports '65321' -RemoteAddress '192.0.2.123' -Protocol Both -Profile $profile
+        $fwEvidence=Join-Path $ResultsDirectory 'firewall-evidence'
+        $applied=$null
+        try{
+            $applied=Invoke-CcdcFirewallPlan -Plan $plan -EvidenceDirectory $fwEvidence -Approved
+            if($applied.RuleNames.Count -ne 2){throw 'Expected TCP and UDP rules'}
+            $status=Get-CcdcFirewallStatus
+            foreach($name in $applied.RuleNames){if(-not @($status.Rules | Where-Object Name -eq $name).Count){throw 'Applied rule absent from status'}}
+        }finally{
+            if($applied){foreach($name in $applied.RuleNames){Undo-CcdcFirewallRule -Name $name -EvidenceDirectory $fwEvidence -Approved}}
+        }
+        foreach($name in $applied.RuleNames){if(Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue){throw 'Toolkit rule remains after undo'}}
+    }
     Test-Step 'GUI startup, background collection, screenshot' {
         $report=Join-Path $ResultsDirectory 'gui.json'
         $process=Start-Process powershell.exe -ArgumentList ('-NoProfile -STA -ExecutionPolicy Bypass -File "'+(Join-Path $installed 'Dashboard.ps1')+'" -SmokeTestReport "'+$report+'"') -PassThru -RedirectStandardError (Join-Path $ResultsDirectory 'gui-errors.txt')
