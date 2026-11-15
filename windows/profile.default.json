@@ -1,0 +1,160 @@
+{
+  "SchemaVersion": 1,
+  "Name": "Generic CCDC - tune for the current packet",
+  "ServerRole": "Other",
+  "KnownManagementAddresses": [],
+  "RequiredPorts": [
+    53,
+    80,
+    443,
+    445,
+    1433,
+    3389,
+    5985,
+    5986
+  ],
+  "ProtectedServices": [
+    "NTDS",
+    "DNS",
+    "WinRM",
+    "MSSQLSERVER",
+    "LanmanServer",
+    "TermService",
+    "W3SVC"
+  ],
+  "Rules": [
+    {
+      "Id": "shell",
+      "Enabled": false,
+      "Kinds": [
+        "PROCESS"
+      ],
+      "Field": "Image",
+      "Pattern": "\\\\(powershell|pwsh|cmd|mshta|wmic|certutil|rundll32)\\.exe$",
+      "Severity": "REVIEW",
+      "Description": "Optional broad utility hunting rule; disabled by default to avoid name-only alerts"
+    },
+    {
+      "Id": "remote-parent",
+      "Enabled": true,
+      "Kinds": [
+        "PROCESS"
+      ],
+      "Field": "ParentImage",
+      "Pattern": "\\\\(wsmprovhost|wmiprvse)\\.exe$",
+      "Severity": "INFO",
+      "Description": "Remote administration ancestry recorded; additional suspicious behavior is needed for an alert"
+    },
+    {
+      "Id": "service-child",
+      "Enabled": true,
+      "Kinds": [
+        "PROCESS"
+      ],
+      "Field": "ParentImage",
+      "Pattern": "\\\\(w3wp|sqlservr)\\.exe$",
+      "Severity": "HIGH",
+      "Description": "Web or SQL worker spawned a command interpreter or execution utility; verify application behavior",
+      "AllOf": [
+        {
+          "Field": "Image",
+          "Pattern": "\\\\(powershell|pwsh|cmd|mshta|wscript|cscript|rundll32)\\.exe$"
+        }
+      ]
+    },
+    {
+      "Id": "script-pattern",
+      "Enabled": true,
+      "Kinds": [
+        "PROCESS",
+        "POWERSHELL"
+      ],
+      "Field": "CommandLine",
+      "Pattern": "(-enc(odedcommand)?\\b|frombase64string|downloadstring|invoke-expression|[as]et-mppreference)",
+      "Severity": "REVIEW",
+      "Description": "Execution or Defender configuration pattern: inspect full content"
+    },
+    {
+      "Id": "shell-network",
+      "Enabled": false,
+      "Kinds": [
+        "CONNECTION"
+      ],
+      "Field": "Image",
+      "Pattern": "\\\\(powershell|pwsh|cmd|mshta|rundll32)\\.exe$",
+      "Severity": "REVIEW",
+      "Description": "Optional broad utility hunting rule; disabled by default to avoid name-only alerts"
+    },
+    {
+      "Id": "remote-tool-script",
+      "Enabled": true,
+      "Kinds": [
+        "PROCESS",
+        "POWERSHELL"
+      ],
+      "Field": "CommandLine",
+      "Pattern": "(evil-?winrm|invoke-binary|invoke-dll|dll-loader|bypass-4msi)",
+      "Severity": "REVIEW",
+      "Description": "Remote-tool or in-memory loading indicator. Inspect behavior; the client is not conclusively identified."
+    }
+  ],
+  "ScoredServices": [
+    {
+      "Role": "AD",
+      "Service": "DNS",
+      "Protocol": "TCP/UDP",
+      "Port": 53,
+      "Check": "Functional lookup against required zone"
+    },
+    {
+      "Role": "AD",
+      "Service": "WinRM",
+      "Protocol": "TCP",
+      "Port": 5985,
+      "Check": "Authenticated PowerShell command; verify configured port"
+    },
+    {
+      "Role": "MSSQL",
+      "Service": "SQL",
+      "Protocol": "TCP",
+      "Port": 1433,
+      "Check": "Authenticated query"
+    },
+    {
+      "Role": "MSSQL",
+      "Service": "SMB",
+      "Protocol": "TCP",
+      "Port": 445,
+      "Check": "Authenticated required-file access"
+    },
+    {
+      "Role": "MSSQL",
+      "Service": "RDP",
+      "Protocol": "TCP",
+      "Port": 3389,
+      "Check": "Authenticated connection"
+    },
+    {
+      "Role": "Splunk",
+      "Service": "Search and management",
+      "Protocol": "TCP",
+      "Port": 8089,
+      "Check": "Authenticated query/management; verify configuration"
+    },
+    {
+      "Role": "Web",
+      "Service": "HTTP/HTTPS",
+      "Protocol": "TCP",
+      "Port": "80/443",
+      "Check": "Required page content"
+    }
+  ],
+  "Safeguards": [
+    "Confirm the current team portal; example services are not authoritative",
+    "No scorer-only source allowlists for public services",
+    "Preserve ICMP and assigned names/addresses",
+    "Do not disable unfamiliar scoring or service accounts",
+    "No automatic containment; verify scoring after approved changes"
+  ],
+  "DetectionDefaultsVersion": 2
+}

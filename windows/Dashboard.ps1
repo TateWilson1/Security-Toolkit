@@ -1,11 +1,21 @@
 #requires -Version 5.1
 # CCDC Windows Server dashboard. Uses Sysmon + Windows Event Logs + live TCP snapshots.
-# Read-only: no automatic blocking or quarantine of suspicious commands.
+# Monitoring never triggers containment. Firewall changes require explicit operator approval.
+[CmdletBinding()]
+param(
+    [string]$DataDirectory = (Join-Path $env:ProgramData 'CCDC-BlueTeam\Evidence\Telemetry'),
+    [string]$ProfilePath = (Join-Path $env:ProgramData 'CCDC-BlueTeam\profile.json'),
+    [string]$SmokeTestReport
+)
 $ErrorActionPreference = 'Stop'
+if (-not (Test-Path $ProfilePath)) { $ProfilePath=Join-Path $PSScriptRoot 'profile.default.json' }
+Import-Module (Join-Path $PSScriptRoot 'Monitoring.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Firewall.psm1') -Force
+$profile=Read-CcdcProfile $ProfilePath
 $myPath = $MyInvocation.MyCommand.Path
 $p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -STA -File "'+$myPath+'"')
+    Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -STA -File "'+$myPath+'" -DataDirectory "'+$DataDirectory+'" -ProfilePath "'+$ProfilePath+'"')
     exit
 }
 Add-Type -AssemblyName System.Windows.Forms
@@ -18,13 +28,10 @@ try {
     if($c.DomainRole -ge 4){$script:role='AD'}
     elseif(Get-Service MSSQLSERVER -ErrorAction SilentlyContinue){$script:role='MSSQL'}
 } catch {}
-$script:streams = @()
-$script:busy = $false
 $script:paused = $false
 $script:onlyAlerts = $false
 $script:count = 0
 $script:alertCount = 0
-$script:hasSysmon = $false
 $bg = [System.Drawing.Color]::FromArgb(15,23,42)
 $surface = [System.Drawing.Color]::FromArgb(30,41,59)
 $fg = [System.Drawing.Color]::FromArgb(226,232,240)
@@ -70,21 +77,168 @@ $bDefender=New-Action 'Defender status' 426 132
 $bPause=New-Action 'Pause live view' 567 128
 $bAlerts=New-Action 'Alerts only: OFF' 706 126
 $script:counters=New-Object System.Windows.Forms.Label
-$script:counters.Text='Events 0   |   Alerts 0';$script:counters.ForeColor=$fg
+$script:counters.Text='Records 0   |   Flags 0';$script:counters.ForeColor=$fg
 $script:counters.Location=[System.Drawing.Point]::new(864,17);$script:counters.Size=[System.Drawing.Size]::new(380,27)
 $script:counters.Font=[System.Drawing.Font]::new('Segoe UI',11,[System.Drawing.FontStyle]::Bold)
-$tools.Controls.Add($script:counters)
+$script:counters.Dock='None';$script:counters.Width=280;$script:counters.Height=26;$script:counters.TextAlign='MiddleRight';$script:counters.Font=[System.Drawing.Font]::new('Segoe UI',9,[System.Drawing.FontStyle]::Bold)
+$top.Controls.Add($script:counters)
+function Update-Header {
+    $script:counters.Location=[System.Drawing.Point]::new([Math]::Max(20,$top.ClientSize.Width-300),18)
+    $script:status.Width=[Math]::Max(300,$top.ClientSize.Width-40)
+}
+$top.Add_Resize({Update-Header})
 $tabs=New-Object System.Windows.Forms.TabControl
 $tabs.Dock='Fill';$tabs.Font=[System.Drawing.Font]::new('Segoe UI',10)
-$form.Controls.Add($tabs);$tabs.BringToFront()
+$form.Controls.Add($tabs);$tabs.BringToFront();$form.Controls.SetChildIndex($top,2)
 function New-Tab([string]$label) {
     $t=New-Object System.Windows.Forms.TabPage;$t.Text=$label;$t.BackColor=$bg
     [void]$tabs.TabPages.Add($t)
     return $t
 }
-$tEvent=New-Tab 'Process + Connection Events'
-$tTcp=New-Tab 'Live TCP Sessions'
-$tNotes=New-Tab 'Scoring Safety'
+$tOverview=New-Tab 'Overview'
+$overviewPanel=New-Object System.Windows.Forms.Panel
+$overviewPanel.Dock='Top';$overviewPanel.Height=118
+$overviewTitle=New-Object System.Windows.Forms.Label
+$overviewTitle.Dock='Top';$overviewTitle.Height=40;$overviewTitle.Text='Starting monitoring...'
+$overviewTitle.Font=[System.Drawing.Font]::new('Segoe UI',17,[System.Drawing.FontStyle]::Bold)
+$coverage=New-Object System.Windows.Forms.Label
+$coverage.Dock='Top';$coverage.Height=36;$coverage.ForeColor=$amber
+$coverage.Text='Checking visibility. A quiet screen does not prove a server is safe.'
+$legend=New-Object System.Windows.Forms.Label
+$legend.Dock='Top';$legend.Height=32;$legend.ForeColor=$fg
+$legend.Text='RED: Investigate first    |    AMBER: Review with a teammate    |    GREEN: No alert triggered (not verified safe)'
+$overviewPanel.Controls.Add($legend);$overviewPanel.Controls.Add($coverage);$overviewPanel.Controls.Add($overviewTitle)
+$overviewSplit=New-Object System.Windows.Forms.SplitContainer
+$overviewSplit.Dock='Fill';$overviewSplit.Orientation='Horizontal';$overviewSplit.Size=[System.Drawing.Size]::new(1200,500);$overviewSplit.SplitterDistance=260
+$overviewGrid=New-Object System.Windows.Forms.DataGridView
+$overviewText=New-Object System.Windows.Forms.TextBox
+$overviewText.Dock='Fill';$overviewText.Multiline=$true;$overviewText.ReadOnly=$true;$overviewText.ScrollBars='Both'
+$overviewText.BackColor=$bg;$overviewText.ForeColor=$fg;$overviewText.Font=[System.Drawing.Font]::new('Segoe UI',11)
+$overviewText.Text='Choose an item above. Start with red, then amber. Read why it was flagged and check with a teammate before responding.'
+$overviewSplit.Panel1.Controls.Add($overviewGrid);$overviewSplit.Panel2.Controls.Add($overviewText)
+$tOverview.Controls.Add($overviewSplit);$tOverview.Controls.Add($overviewPanel)
+$tFirewall=New-Tab 'Firewall'
+$fwPanel=New-Object System.Windows.Forms.FlowLayoutPanel
+$fwPanel.Dock='Top';$fwPanel.Height=150;$fwPanel.AutoScroll=$true
+$fwPanel.ForeColor=$fg
+function New-FirewallLabel([string]$text,[int]$width=150){
+    $script:fwFieldPanel=New-Object System.Windows.Forms.Panel
+    $script:fwFieldPanel.Width=$width;$script:fwFieldPanel.Height=52;$script:fwFieldPanel.Margin=[System.Windows.Forms.Padding]::new(4)
+    $l=New-Object System.Windows.Forms.Label;$l.Text=$text;$l.Dock='Top';$l.Height=20
+    $script:fwFieldPanel.Controls.Add($l);$fwPanel.Controls.Add($script:fwFieldPanel)
+}
+New-FirewallLabel 'Service' 185
+$fwPreset=New-Object System.Windows.Forms.ComboBox;$fwPreset.DropDownStyle='DropDownList';$fwPreset.Width=180
+$fwPresets=@(Get-CcdcFirewallPresets);foreach($p in $fwPresets){[void]$fwPreset.Items.Add($p.Name)};$script:fwFieldPanel.Controls.Add($fwPreset);$fwPreset.Dock='Bottom'
+New-FirewallLabel 'Action' 85
+$fwAction=New-Object System.Windows.Forms.ComboBox;$fwAction.DropDownStyle='DropDownList';$fwAction.Width=80
+$fwAction.Items.AddRange([object[]]@('Allow','Block'));$fwAction.SelectedIndex=0;$script:fwFieldPanel.Controls.Add($fwAction);$fwAction.Dock='Bottom'
+New-FirewallLabel 'Ports' 100
+$fwPorts=New-Object System.Windows.Forms.TextBox;$fwPorts.Width=100;$script:fwFieldPanel.Controls.Add($fwPorts);$fwPorts.Dock='Bottom'
+New-FirewallLabel 'Protocol' 85
+$fwProtocol=New-Object System.Windows.Forms.ComboBox;$fwProtocol.DropDownStyle='DropDownList';$fwProtocol.Width=80
+$fwProtocol.Items.AddRange([object[]]@('TCP','UDP','Both'));$fwProtocol.SelectedIndex=0;$script:fwFieldPanel.Controls.Add($fwProtocol);$fwProtocol.Dock='Bottom'
+New-FirewallLabel 'Remote IP (or Any)' 160
+$fwRemote=New-Object System.Windows.Forms.TextBox;$fwRemote.Text='Any';$fwRemote.Width=160;$script:fwFieldPanel.Controls.Add($fwRemote);$fwRemote.Dock='Bottom'
+New-FirewallLabel 'Direction' 100
+$fwDirection=New-Object System.Windows.Forms.ComboBox;$fwDirection.DropDownStyle='DropDownList';$fwDirection.Width=100
+$fwDirection.Items.AddRange([object[]]@('Inbound','Outbound'));$fwDirection.SelectedIndex=0;$script:fwFieldPanel.Controls.Add($fwDirection);$fwDirection.Dock='Bottom'
+New-FirewallLabel 'Network profile' 155
+$fwNetwork=New-Object System.Windows.Forms.ComboBox;$fwNetwork.DropDownStyle='DropDownList';$fwNetwork.Width=95
+$fwNetwork.Items.AddRange([object[]]@('Any','Domain','Private','Public'));$fwNetwork.SelectedIndex=0;$script:fwFieldPanel.Controls.Add($fwNetwork);$fwNetwork.Dock='Bottom'
+$fwApply=New-Object System.Windows.Forms.Button;$fwApply.Text='Review and apply';$fwApply.AutoSize=$true;$fwPanel.Controls.Add($fwApply)
+$fwUndo=New-Object System.Windows.Forms.Button;$fwUndo.Text='Undo selected toolkit rule';$fwUndo.AutoSize=$true;$fwPanel.Controls.Add($fwUndo)
+$fwPreset.Add_SelectedIndexChanged({$preset=$fwPresets[$fwPreset.SelectedIndex];$fwPorts.Text=$preset.Ports;$fwProtocol.SelectedItem=$preset.Protocol})
+$fwPreset.SelectedIndex=0
+$fwStatus=New-Object System.Windows.Forms.TextBox
+$fwStatus.Dock='Bottom';$fwStatus.Height=125;$fwStatus.Multiline=$true;$fwStatus.ReadOnly=$true
+$fwStatus.BackColor=$bg;$fwStatus.ForeColor=$fg;$fwStatus.ScrollBars='Vertical'
+$fwStatus.Text='No firewall changes occur until you review and explicitly approve a rule. Existing block rules take precedence over allow rules. Verify remote scoring after each change.'
+$fwGrid=New-Object System.Windows.Forms.DataGridView
+$fwGrid.Dock='Fill';$fwGrid.ReadOnly=$true;$fwGrid.AllowUserToAddRows=$false;$fwGrid.SelectionMode='FullRowSelect';$fwGrid.MultiSelect=$false
+$fwGrid.AutoSizeColumnsMode='Fill';$fwGrid.RowHeadersVisible=$false
+foreach($name in @('Action','Direction','Ports','Protocol','Remote','Profile','Enabled')){[void]$fwGrid.Columns.Add($name,$name)}
+$tFirewall.Controls.Add($fwGrid);$tFirewall.Controls.Add($fwStatus);$tFirewall.Controls.Add($fwPanel)
+$script:firewallRequest=$null
+$fwApply.Add_Click({
+    try{
+        $fresh=Read-CcdcProfile $ProfilePath
+        $plan=New-CcdcFirewallPlan -Action $fwAction.SelectedItem -Ports $fwPorts.Text -RemoteAddress $fwRemote.Text -Protocol $fwProtocol.SelectedItem -Direction $fwDirection.SelectedItem -NetworkProfile $fwNetwork.SelectedItem -Role $script:role -Profile $fresh
+        $message=$plan.Summary+[Environment]::NewLine+'This changes Windows Firewall on this server. Existing block rules may override Allow.'
+        if($plan.ScoringRisk){$message+=[Environment]::NewLine+'SCORING RISK: confirm required services, management/scoring addresses and recovery before proceeding.'}
+        $message+=[Environment]::NewLine+'Apply this scoped change? Verify live scoring immediately afterward.'
+        if([System.Windows.Forms.MessageBox]::Show($message,'Approve firewall change','YesNo','Warning','Button2') -ne 'Yes'){return}
+        $script:firewallRequest=[pscustomobject]@{Mode='Add';Action=$plan.Action;Ports=($plan.Ports -join ',');RemoteAddress=$plan.RemoteAddress
+            Protocol=[string]$fwProtocol.SelectedItem;Direction=$plan.Direction;NetworkProfile=$plan.NetworkProfile;Role=$script:role}
+        $fwApply.Enabled=$false;$fwUndo.Enabled=$false;$fwStatus.Text='Applying the approved rule. Recovery is saved under Evidence\Firewall.'
+    }catch{[void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Rule was not applied','OK','Warning')}
+})
+$fwUndo.Add_Click({
+    if(-not $fwGrid.CurrentRow -or -not $fwGrid.CurrentRow.Tag){return}
+    $name=[string]$fwGrid.CurrentRow.Tag
+    if([System.Windows.Forms.MessageBox]::Show(('Remove only rule '+$name+'? Existing Windows rules will remain. Recheck scoring afterward.'),'Approve undo','YesNo','Warning','Button2') -ne 'Yes'){return}
+    $script:firewallRequest=[pscustomobject]@{Mode='Undo';Name=$name}
+    $fwApply.Enabled=$false;$fwUndo.Enabled=$false;$fwStatus.Text='Undoing the approved toolkit rule.'
+})
+$tAd=New-Tab 'AD checks'
+$adText=New-Object System.Windows.Forms.TextBox
+$adText.Dock='Fill';$adText.Multiline=$true;$adText.ReadOnly=$true;$adText.BackColor=$bg;$adText.ForeColor=$fg
+$adText.Font=[System.Drawing.Font]::new('Segoe UI',12)
+$adText.Text=@'
+ACTIVE DIRECTORY - UNDERSTAND BEFORE CHANGING
+
+Quick AD overview: show privileged membership, risky account settings and password policy.
+This collects current AD state directly; it does not depend on Event Logs.
+
+Testimo assessment: optional focused checks for password policy and Kerberos account age.
+Requires a reviewed Testimo installation and its dependencies, plus AD access.
+No automatic module downloads, full-forest sweep or remediation.
+
+A failed health check is something to review, not proof an account is malicious.
+SYSTEM and service accounts can be used by attackers. Account name alone never clears activity.
+Scoring can legitimately use WinRM and PowerShell. Confirm changes with a teammate.
+
+Reports open in the local browser and are saved under Evidence\AD.
+These assessments are on demand; they are not continuous AD change monitoring.
+'@
+$adText.Text=$adText.Text -replace '\r?\n',[Environment]::NewLine
+$adText.Add_Enter({$adText.DeselectAll()})
+$adButtons=New-Object System.Windows.Forms.FlowLayoutPanel
+$adButtons.Dock='Top';$adButtons.Height=48
+foreach($label in @('Quick AD overview','Run focused Testimo checks')){
+    $button=New-Object System.Windows.Forms.Button;$button.Text=$label;$button.AutoSize=$true;$button.Height=36
+    $adButtons.Controls.Add($button)
+    if($label -like 'Quick*'){$adInventory=$button}else{$adTestimo=$button}
+}
+$tAd.Controls.Add($adText);$tAd.Controls.Add($adButtons)
+$tEvent=New-Tab 'Timeline'
+$tTcp=New-Tab 'Connections'
+$tArchive=New-Tab 'History'
+$archiveSearch=New-Object System.Windows.Forms.TextBox
+$archiveSearch.Dock='Top';$archiveSearch.AccessibleName='Search complete JSONL archive (literal JSON text)'
+$archiveButton=New-Object System.Windows.Forms.Button
+$archiveButton.Dock='Top';$archiveButton.Text='Search all recorded history (latest 1200 matches)'
+$archiveGrid=New-Object System.Windows.Forms.DataGridView
+$archiveGrid.Dock='Fill';$archiveGrid.ReadOnly=$true;$archiveGrid.AllowUserToAddRows=$false
+$archiveGrid.AutoSizeColumnsMode='Fill';$archiveGrid.RowHeadersVisible=$false
+foreach($name in @('UTC','Severity','Kind','Image','Command','Source','Destination')){[void]$archiveGrid.Columns.Add($name,$name)}
+$tArchive.Controls.Add($archiveGrid);$tArchive.Controls.Add($archiveButton);$tArchive.Controls.Add($archiveSearch)
+$archiveGrid.Add_CellDoubleClick({
+    if($archiveGrid.CurrentRow){[void][System.Windows.Forms.MessageBox]::Show([string]$archiveGrid.CurrentRow.Tag,'Recorded event')}
+})
+$script:archiveRequested=$false
+$archiveButton.Add_Click({$script:archiveRequested=$true;$archiveButton.Enabled=$false;$archiveButton.Text='Searching archive... (collection resumes after scan)'})
+$tTree=New-Tab 'Process tree'
+$tHealth=New-Tab 'Health'
+$tNotes=New-Tab 'Safety'
+$tree=New-Object System.Windows.Forms.TreeView
+$tree.Dock='Fill';$tree.BackColor=$bg;$tree.ForeColor=$fg
+$tTree.Controls.Add($tree)
+$healthBox=New-Object System.Windows.Forms.TextBox
+$healthBox.Dock='Fill';$healthBox.Multiline=$true;$healthBox.ReadOnly=$true;$healthBox.ScrollBars='Both'
+$healthBox.BackColor=$bg;$healthBox.ForeColor=$fg
+$healthBox.Add_Enter({$healthBox.DeselectAll()})
+$tHealth.Controls.Add($healthBox)
 function Set-Grid($g) {
     $g.Dock='Fill';$g.BackgroundColor=$bg;$g.GridColor=$surface
     $g.ReadOnly=$true;$g.AllowUserToAddRows=$false;$g.AllowUserToDeleteRows=$false
@@ -101,12 +255,43 @@ function Set-Grid($g) {
     $g.Font=[System.Drawing.Font]::new('Segoe UI',9)
     $g.RowTemplate.Height=26
 }
+Set-Grid $overviewGrid
+Set-Grid $fwGrid
+Set-Grid $archiveGrid
+foreach($column in @(@('Priority','What to do'),@('What','What happened'),@('Why','Why it needs attention'),@('Account','Account (context only)'),@('At','Time (local)'))){[void]$overviewGrid.Columns.Add($column[0],$column[1])}
+$overviewGrid.Columns['Why'].FillWeight=220
+function Explain-Event($r){
+    $label=if($r.Severity -eq 'HIGH'){'INVESTIGATE FIRST'}elseif($r.Severity -eq 'REVIEW'){'REVIEW WITH A TEAMMATE'}else{'NO ALERT - KEEP MONITORING'}
+    $why=if(@($r.Reasons).Count){$r.Reasons -join [Environment]::NewLine}else{'No alert condition matched. This does not prove the activity is safe.'}
+    @(
+        $label
+        ''
+        ('What: '+$r.Kind+' - '+$r.Image)
+        ('Why: '+$why)
+        ''
+        'NEXT: Confirm whether a teammate, scoring engine or application was expected to do this.'
+        'Save evidence. Ask a teammate before stopping anything. Recheck scoring after any response.'
+        ''
+        ('When (local): '+[datetimeoffset]::Parse($r.Time).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz'))
+        ('Account: '+$r.User+' (even SYSTEM or a service account can be compromised)')
+        ('Parent: '+$r.ParentImage)
+        ('Command: '+$r.CommandLine)
+        ('Network: '+$r.SourceIp+':'+$r.SourcePort+' -> '+$r.DestinationIp+':'+$r.DestinationPort)
+        ('Observation source: '+$r.Channel)
+        ('How it was seen: '+$r.Data.Observation)
+        ''
+        ''
+        'TECHNICAL EVIDENCE (for detailed investigation):'
+        (ConvertTo-Json -InputObject $r -Depth 8)
+    ) -join [Environment]::NewLine
+}
+$overviewGrid.Add_SelectionChanged({if(-not $script:rendering -and $overviewGrid.CurrentRow -and $overviewGrid.CurrentRow.Tag){$overviewText.Text=Explain-Event $overviewGrid.CurrentRow.Tag}})
 $split=New-Object System.Windows.Forms.SplitContainer
-$split.Dock='Fill';$split.Orientation='Horizontal';$split.SplitterDistance=450
+$split.Dock='Fill';$split.Orientation='Horizontal';$split.Size=[System.Drawing.Size]::new(1200,600);$split.SplitterDistance=390
 $tEvent.Controls.Add($split)
 $script:eventGrid=New-Object System.Windows.Forms.DataGridView
 Set-Grid $script:eventGrid
-foreach($column in @(@('At','Time'),@('Priority','Priority'),@('Kind','Event'),@('Image','Process'),@('Parent','Parent process'),@('From','Source IP'),@('To','Destination IP'),@('Who','User'))) {
+foreach($column in @(@('At','Time'),@('Priority','Priority'),@('Kind','Observation'),@('Source','Source'),@('Image','Process'),@('Parent','Parent process'),@('From','Source IP'),@('To','Destination IP'),@('Who','User'))) {
     [void]$script:eventGrid.Columns.Add($column[0],$column[1])
 }
 $script:eventGrid.Columns['At'].FillWeight=70
@@ -118,6 +303,7 @@ $script:eventGrid.Columns['From'].FillWeight=105
 $script:eventGrid.Columns['To'].FillWeight=105
 $script:eventGrid.Columns['Who'].FillWeight=110
 $split.Panel1.Controls.Add($script:eventGrid)
+$script:rendering=$false
 $script:detail=New-Object System.Windows.Forms.TextBox
 $script:detail.Dock='Fill';$script:detail.Multiline=$true;$script:detail.ReadOnly=$true
 $script:detail.WordWrap=$false;$script:detail.ScrollBars='Both'
@@ -126,8 +312,8 @@ $script:detail.Font=[System.Drawing.Font]::new('Consolas',9)
 $script:detail.Text='Select a timeline event for FULL command line, parent, event record ID, and timestamps.'
 $split.Panel2.Controls.Add($script:detail)
 $script:eventGrid.Add_SelectionChanged({
-    if($script:eventGrid.SelectedRows.Count -gt 0 -and $script:eventGrid.SelectedRows[0].Tag){
-        $script:detail.Text=[string]$script:eventGrid.SelectedRows[0].Tag
+    if(-not $script:rendering -and $script:eventGrid.SelectedRows.Count -gt 0 -and $script:eventGrid.SelectedRows[0].Tag){
+        $script:detail.Text=Explain-Event $script:eventGrid.SelectedRows[0].Tag
     }
 })
 $script:tcp=New-Object System.Windows.Forms.DataGridView
@@ -168,16 +354,17 @@ Capture first, respond second:
   4. Contain ONLY confirmed malicious process/file/IP
   5. Recheck scored service in current Team Portal after every change
 
-Nothing here auto-disables users, blocks hosts, kills shells, or
-modifies firewall, DNS, SQL, or WinRM settings.
+Monitoring never disables users, blocks hosts or kills shells.
+Firewall apply only explicitly approved manual rules.
+DNS, SQL and WinRM settings are not changed by monitoring.
 
 Sysmon Event 1 = process creation (parent, command line)
 Sysmon Event 3 = network connection; event 5 = process exit
-Windows Security 4688 = fallback process create if Sysmon missing
+Windows Security 4688 = independent process audit (may duplicate Sysmon)
 Windows Security 4624/4625 = logon success/failure
 PowerShell Operational 4104 = script block content
 
-TCP tab: refreshes current established sessions every 2 seconds.
+TCP tab: refreshes current sockets after each background batch.
 Short connections may be missed in snapshot tab. Sysmon 3 event
 capture is the better history (not a raw packet recorder).
 
@@ -185,180 +372,251 @@ Windows Defender Antivirus is a separate prevention layer.
 If its real-time protection is ACTIVE, it can quarantine malware
 that it recognizes. This GUI does not trigger quarantine itself.
 '@
+$instructions.Text=$instructions.Text -replace '\r?\n',[Environment]::NewLine
+$instructions.Add_Enter({$instructions.DeselectAll()})
+$instructions.AppendText(([Environment]::NewLine+'CURRENT PROFILE GUARDRAILS'+[Environment]::NewLine+($profile.Safeguards -join [Environment]::NewLine)))
+$instructions.AppendText(([Environment]::NewLine+($profile.ScoredServices | Format-Table Role,Service,Protocol,Port,Check -AutoSize | Out-String -Width 150)))
 $tNotes.Controls.Add($instructions)
-function To-Map($event) {
-    $h=@{}
-    try{
-        [xml]$x=$event.ToXml()
-        foreach($n in @($x.Event.EventData.Data)){
-            if($n -and $n.Name){$h[[string]$n.Name]=[string]$n.'#text'}
-        }
-    }catch{}
-    return $h
-}
-function Value($map,[string]$name){
-    if($map.ContainsKey($name) -and $null -ne $map[$name]){return [string]$map[$name]}
-    return ''
-}
-function Add-Event($ev,$map,$stream) {
-    $kind='EVENT';$priority='INFO';$proc='';$parent='';$command='';$from='';$to='';$who=''
-    if($stream.Log -like '*Sysmon*'){
-        if($ev.Id -eq 1){
-            $kind='PROCESS';$proc=Value $map 'Image';$parent=Value $map 'ParentImage'
-            $command=Value $map 'CommandLine';$who=Value $map 'User'
-            if($proc -match '(?i)(powershell|pwsh|cmd|mshta|rundll32|regsvr32|certutil|wmic|wscript|cscript|schtasks)\.exe$'){$priority='REVIEW'}
-            if($parent -match '(?i)(wmiprvse|wsmprovhost)\.exe$'){$priority='REVIEW'}
-            if($parent -match '(?i)(w3wp|sqlservr)\.exe$' -and $proc -match '(?i)(powershell|pwsh|cmd|mshta|rundll32)\.exe$'){$priority='HIGH'}
-            if($command -match '(?i)(-encodedcommand|frombase64string|downloadstring)'){$priority='REVIEW'}
-        }elseif($ev.Id -eq 3){
-            $kind='CONNECTION';$proc=Value $map 'Image';$who=Value $map 'User'
-            $from=(Value $map 'SourceIp')+':'+(Value $map 'SourcePort')
-            $to=(Value $map 'DestinationIp')+':'+(Value $map 'DestinationPort')
-            if($proc -match '(?i)(powershell|pwsh|cmd|mshta|rundll32)\.exe$'){$priority='REVIEW'}
-        }elseif($ev.Id -eq 5){
-            $kind='EXIT';$proc=Value $map 'Image';$who=Value $map 'User'
-        }else{return}
-    }elseif($stream.Log -eq 'Security'){
-        if($ev.Id -eq 4688){
-            if($script:hasSysmon){return}
-            $kind='PROCESS';$proc=Value $map 'NewProcessName'
-            $parent=Value $map 'ParentProcessName'
-            $command=Value $map 'CommandLine';$who=Value $map 'SubjectUserName'
-            if($proc -match '(?i)(powershell|pwsh|cmd|mshta|certutil|wmic)\.exe$'){$priority='REVIEW'}
-        }elseif($ev.Id -eq 4624 -or $ev.Id -eq 4625){
-            $lt=Value $map 'LogonType'
-            if($ev.Id -eq 4624 -and $lt -notin @('2','3','10')){return}
-            $kind=if($ev.Id -eq 4624){"LOGIN $lt"}else{'FAILED LOGIN'}
-            $who=Value $map 'TargetUserName';$from=Value $map 'IpAddress'
-            if($ev.Id -eq 4625){$priority='REVIEW'}
-        }else{
-            $kind='ACCOUNT CHANGE';$priority='HIGH'
-            $who=Value $map 'TargetUserName'
-        }
-    }elseif($ev.Id -eq 4104){
-        $kind='POWERSHELL'
-        $proc='Script block';$command=Value $map 'ScriptBlockText';$priority='REVIEW'
-    }else{return}
-    $script:count++
-    if($priority -ne 'INFO'){$script:alertCount++}
-    $script:counters.Text="Events $($script:count)   |   Alerts $($script:alertCount)"
-    if($script:onlyAlerts -and $priority -eq 'INFO'){return}
-    $detailLines=@(
-        'HOST: '+$env:COMPUTERNAME
-        'TIMESTAMP: '+$ev.TimeCreated.ToString('o')
-        'EVENT SOURCE: '+$stream.Log
-        'EVENT ID: '+$ev.Id
-        'EVENT RECORD ID: '+$ev.RecordId
-        'PRIORITY: '+$priority+' (heuristic only)'
-        'PROCESS: '+$proc
-        'PARENT: '+$parent
-        'USER: '+$who
-        'SOURCE: '+$from
-        'DESTINATION: '+$to
-        'PROCESS GUID: '+(Value $map 'ProcessGuid')
-        'PROCESS ID: '+(Value $map 'ProcessId')
-        'PARENT COMMAND: '+(Value $map 'ParentCommandLine')
-        'COMMAND: '+$command
-        ''
-        'Original record remains in the Windows event log.'
-    )
-    $display=($proc -split '\\')[-1]
-    if($display.Length -gt 90){$display=$display.Substring(0,90)}
-    $parentName=($parent -split '\\')[-1]
-    $row=[object[]]@($ev.TimeCreated.ToString('HH:mm:ss'),$priority,$kind,$display,$parentName,$from,$to,$who)
-    $index=$script:eventGrid.Rows.Add($row)
-    $script:eventGrid.Rows[$index].Tag=$detailLines -join [Environment]::NewLine
-    if($priority -eq 'HIGH'){
-        $script:eventGrid.Rows[$index].DefaultCellStyle.ForeColor=$red
-        try{[Console]::Beep(880,110)}catch{}
-    }elseif($priority -eq 'REVIEW'){
-        $script:eventGrid.Rows[$index].DefaultCellStyle.ForeColor=$amber
+# Search operates on the most recent 1200 retained rows, including replay at startup.
+$search=New-Object System.Windows.Forms.TextBox
+$search.Dock='Top';$search.BackColor=$surface;$search.ForeColor=$fg
+$filterPanel=New-Object System.Windows.Forms.Panel
+$filterPanel.Dock='Top';$filterPanel.Height=28
+$filterLabel=New-Object System.Windows.Forms.Label
+$filterLabel.Text='Filter recent events:';$filterLabel.Dock='Left';$filterLabel.Width=160;$filterLabel.ForeColor=$fg
+$search.Dock='Fill';$filterPanel.Controls.Add($search);$filterPanel.Controls.Add($filterLabel)
+$tEvent.Controls.Add($filterPanel)
+$search.AccessibleName='Search recent events by command, address, user or process'
+$script:recent=New-Object 'System.Collections.Generic.List[object]'
+$script:seen=New-Object 'System.Collections.Generic.HashSet[string]'
+function Show-Recent {
+    $selectedKey=''
+    if($script:eventGrid.SelectedRows.Count -gt 0 -and $script:eventGrid.CurrentRow.Tag){$selectedKey=$script:eventGrid.CurrentRow.Tag.Key}
+    $overviewKey='';$overviewScroll=0
+    if($overviewGrid.SelectedRows.Count -gt 0 -and $overviewGrid.CurrentRow.Tag){$overviewKey=$overviewGrid.CurrentRow.Tag.Key}
+    if($overviewGrid.FirstDisplayedScrollingRowIndex -ge 0){$overviewScroll=$overviewGrid.FirstDisplayedScrollingRowIndex}
+    $script:rendering=$true
+    try {
+    $script:eventGrid.Rows.Clear()
+    $overviewGrid.Rows.Clear()
+    $selectedIndex=-1;$overviewIndex=-1
+    $high=@($script:recent | Where-Object Severity -eq 'HIGH').Count
+    $review=@($script:recent | Where-Object Severity -eq 'REVIEW').Count
+    if($high){$overviewTitle.Text="Investigate first: $high red items";$overviewTitle.ForeColor=$red}
+    elseif($review){$overviewTitle.Text="Review next: $review amber items";$overviewTitle.ForeColor=$amber}
+    else{$overviewTitle.Text='No alerts in the recent window - keep monitoring';$overviewTitle.ForeColor=[System.Drawing.Color]::LightGreen}
+    foreach($r in ($script:recent | Where-Object Severity -ne 'INFO' | Sort-Object @{Expression={if($_.Severity -eq 'HIGH'){0}else{1}}},@{Expression='Time';Descending=$true} | Select-Object -First 150)){
+        $label=if($r.Severity -eq 'HIGH'){'RED - Investigate first'}else{'AMBER - Review'}
+        $i=$overviewGrid.Rows.Add([object[]]@($label,($r.Kind+' '+($r.Image -split '\\')[-1]),($r.Reasons -join '; '),$r.User,([datetimeoffset]::Parse($r.Time).ToLocalTime().ToString('HH:mm:ss'))))
+        $overviewGrid.Rows[$i].Tag=$r
+        if($r.Key -eq $overviewKey){$overviewIndex=$i}
+        $overviewGrid.Rows[$i].DefaultCellStyle.ForeColor=if($r.Severity -eq 'HIGH'){$red}else{$amber}
     }
-    if($script:eventGrid.Rows.Count -gt 1200){$script:eventGrid.Rows.RemoveAt(0)}
-    if($script:eventGrid.Rows.Count -gt 0){
-        try{$script:eventGrid.FirstDisplayedScrollingRowIndex=$script:eventGrid.Rows.Count-1}catch{}
+    $needle=$search.Text
+    foreach ($r in ($script:recent | Sort-Object @{Expression='Time';Descending=$true},Channel,RecordId)) {
+        if ($script:onlyAlerts -and $r.Severity -eq 'INFO') { continue }
+        $details=ConvertTo-Json -InputObject $r -Depth 8
+        if ($needle -and $details.IndexOf($needle,[StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+        $index=$script:eventGrid.Rows.Add([object[]]@(
+            ([datetimeoffset]::Parse($r.Time).ToLocalTime().ToString('MM-dd HH:mm:ss')),
+            $r.Severity,$r.Kind,$(if($r.Channel -eq 'Direct state snapshots'){'Snapshot'}else{'Event log'}),($r.Image -split '\\')[-1],($r.ParentImage -split '\\')[-1],
+            $(if($r.SourceIp){'['+$r.SourceIp+']:'+$r.SourcePort}else{''}),$(if($r.DestinationIp){'['+$r.DestinationIp+']:'+$r.DestinationPort}else{''}),$r.User))
+        $row=$script:eventGrid.Rows[$index];$row.Tag=$r
+        if($r.Key -eq $selectedKey){$selectedIndex=$index}
+        if ($r.Severity -eq 'HIGH') { $row.DefaultCellStyle.ForeColor=$red }
+        elseif ($r.Severity -eq 'REVIEW') { $row.DefaultCellStyle.ForeColor=$amber }
+        else {$row.DefaultCellStyle.ForeColor=[System.Drawing.Color]::LightGreen}
     }
-}
-function Init-Streams {
-    $script:streams=@()
-    foreach($spec in @(
-        @{Log='Microsoft-Windows-Sysmon/Operational';Ids=@(1,3,5)},
-        @{Log='Security';Ids=@(4624,4625,4688,4720,4722,4725,4728,4732,4738,4740,1102)},
-        @{Log='Microsoft-Windows-PowerShell/Operational';Ids=@(4104)}
-    )){
-        try{
-            $info=Get-WinEvent -ListLog $spec.Log -ErrorAction Stop
-            if(-not $info.IsEnabled){continue}
-            $head=Get-WinEvent -LogName $spec.Log -MaxEvents 1 -ErrorAction SilentlyContinue
-            $last=[long]0
-            if($head){$last=[long]$head.RecordId}
-            $script:streams += [pscustomobject]@{Log=$spec.Log;Ids=$spec.Ids;Last=$last}
-        }catch{}
+    # GUIDs distinguish process lifetimes despite PID reuse. Missing parents stay explicit.
+    $tree.BeginUpdate();$tree.Nodes.Clear();$nodes=@{}
+    foreach ($r in $script:recent) {
+        if ($r.Kind -ne 'PROCESS' -or -not $r.ProcessGuid -or $nodes.ContainsKey($r.ProcessGuid)) { continue }
+        $node=New-Object System.Windows.Forms.TreeNode
+        $node.Text=($r.Image+' [PID '+$r.ProcessId+'] '+$r.Time)
+        $node.Tag=$r;$nodes[$r.ProcessGuid]=$node
     }
-    $script:hasSysmon=(@($script:streams | Where-Object {$_.Log -like '*Sysmon*'}).Count -gt 0)
-    $sysState=if($script:hasSysmon){'ON'}else{'MISSING: process/network event coverage limited'}
-    $script:status.Text="HOST $env:COMPUTERNAME  |  ROLE $script:role  |  Sysmon $sysState  |  No automatic blocks"
-}
-function Poll-EventStreams {
-    foreach($stream in $script:streams){
-        try{
-            $ids=($stream.Ids | ForEach-Object {"EventID=$_"}) -join ' or '
-            $xp="*[System[(EventRecordID > $($stream.Last)) and ($ids)]]"
-            $events=@(Get-WinEvent -LogName $stream.Log -FilterXPath $xp -MaxEvents 400 -ErrorAction SilentlyContinue | Sort-Object RecordId)
-            if($events.Count -ge 400){$script:status.Text="High event volume! Only latest 400 events per poll for $($stream.Log); use Export or SIEM for full history."}
-            foreach($ev in $events){
-                if([long]$ev.RecordId -le $stream.Last){continue}
-                $stream.Last=[long]$ev.RecordId
-                Add-Event $ev (To-Map $ev) $stream
-            }
-        }catch{$script:status.Text="Event polling issue for $($stream.Log): $($_.Exception.Message)"}
+    foreach ($node in @($nodes.Values)) {
+        $parentGuid=$node.Tag.ParentProcessGuid
+        # Prevent malformed/custom telemetry from building cyclic Trees.
+        if ($parentGuid -and $nodes.ContainsKey($parentGuid) -and
+            [datetimeoffset]::Parse($nodes[$parentGuid].Tag.Time) -lt [datetimeoffset]::Parse($node.Tag.Time)) {
+            [void]$nodes[$parentGuid].Nodes.Add($node)
+        } else { $node.Text+=' (parent outside retained view or unavailable)';[void]$tree.Nodes.Add($node) }
     }
+    $tree.EndUpdate()
+    $overviewGrid.ClearSelection()
+    if($overviewIndex -ge 0){$overviewGrid.CurrentCell=$overviewGrid.Rows[$overviewIndex].Cells[0];$overviewGrid.Rows[$overviewIndex].Selected=$true}
+    if($overviewScroll -lt $overviewGrid.Rows.Count){$overviewGrid.FirstDisplayedScrollingRowIndex=$overviewScroll}
+    $script:eventGrid.ClearSelection()
+    if($selectedIndex -ge 0){$script:eventGrid.CurrentCell=$script:eventGrid.Rows[$selectedIndex].Cells[0];$script:eventGrid.Rows[$selectedIndex].Selected=$true}
+    } finally {$script:rendering=$false}
 }
-function Poll-Tcp {
-    try{
-        $connections=@(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Select-Object -First 600)
-        $script:tcp.Rows.Clear()
-        $names=@{}
-        foreach($c in $connections){
-            $pidText=[string]$c.OwningProcess
-            if(-not $names.ContainsKey($pidText)){
-                $p=Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
-                $names[$pidText]=if($p){$p.ProcessName}else{'(exited)'}
-            }
-            [void]$script:tcp.Rows.Add([object[]]@(
-                "$($c.LocalAddress):$($c.LocalPort)",
-                "$($c.RemoteAddress):$($c.RemotePort)",
-                $pidText,$names[$pidText],[string]$c.State))
-        }
-    }catch{$script:status.Text="TCP refresh issue: $($_.Exception.Message)"}
-}
+$tree.Add_AfterSelect({ $script:detail.Text=ConvertTo-Json -InputObject $tree.SelectedNode.Tag -Depth 8 })
+$tree.Add_NodeMouseDoubleClick({
+    [void][System.Windows.Forms.MessageBox]::Show((ConvertTo-Json -InputObject $tree.SelectedNode.Tag -Depth 8),'Process details')
+})
+$search.Add_TextChanged({Show-Recent})
 function Run-Mode([string]$mode){
     $helper=Join-Path $script:base 'CCDC-BlueTeam.ps1'
-    $args='-NoExit -NoProfile -ExecutionPolicy Bypass -File "'+$helper+'" -Mode '+$mode+' -Role '+$script:role+' -OutputDir "'+(Join-Path $script:base 'Evidence')+'"'
-    Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $args
+    $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$helper+'" -Mode '+$mode+' -Role '+$script:role+' -OutputDir "'+(Join-Path $env:ProgramData 'CCDC-BlueTeam\Evidence')+'"'
+    Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments
 }
+function Run-AdAssessment([string]$mode){
+    $path=Join-Path $PSScriptRoot 'AD-Assessment.ps1'
+    Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList ('-NoExit -NoProfile -ExecutionPolicy Bypass -File "'+$path+'" -Mode '+$mode)
+}
+$adInventory.Add_Click({Run-AdAssessment 'Inventory'})
+$adTestimo.Add_Click({Run-AdAssessment 'Testimo'})
 $bBaseline.Add_Click({Run-Mode 'Baseline'})
 $bCheck.Add_Click({Run-Mode 'Check'})
 $bExport.Add_Click({Run-Mode 'Export'})
-$bDefender.Add_Click({
-    $command='if(Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue){Get-MpComputerStatus | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureLastUpdated | Format-List; Get-MpThreatDetection | Select-Object -First 20 | Format-List}else{Write-Host ''Defender status unavailable''}'
-    Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList ('-NoExit -NoProfile -Command "'+$command+'"')
-})
+$bDefender.Add_Click({$tabs.SelectedTab=$tHealth})
 $bPause.Add_Click({
     $script:paused=-not $script:paused
     $bPause.Text=if($script:paused){'Resume view'}else{'Pause live view'}
+    if (-not $script:paused) { Show-Recent }
 })
 $bAlerts.Add_Click({
     $script:onlyAlerts=-not $script:onlyAlerts
     $bAlerts.Text=if($script:onlyAlerts){'Alerts only: ON'}else{'Alerts only: OFF'}
+    Show-Recent
 })
+# All Windows queries and disk writes execute in a dedicated runspace. UI never waits
+# synchronously for a query. A single outstanding batch bounds memory under load.
+$worker=[powershell]::Create()
+$script:pending=$null;$script:first=$true;$script:batchCount=0;$script:hadCollectionError=$false;$script:collectionErrors=New-Object 'System.Collections.Generic.List[string]';$script:lastHealth=@();$script:smokeStart=Get-Date
+$collect={
+    param($base,$data,$profilePath,$first,$searchArchive,$archiveQuery,$firewallRequest)
+    $ErrorActionPreference='Stop'
+    Import-Module (Join-Path $base 'Monitoring.psm1')
+    $profile=Read-CcdcProfile $profilePath
+    Import-Module (Join-Path $base 'Firewall.psm1')
+    $firewallResult=''
+    if($firewallRequest){
+        try{
+            $fwEvidence=Join-Path (Split-Path $data -Parent) 'Firewall'
+            if($firewallRequest.Mode -eq 'Undo'){
+                Undo-CcdcFirewallRule -Name $firewallRequest.Name -EvidenceDirectory $fwEvidence -Approved
+                $firewallResult='Removed toolkit rule '+$firewallRequest.Name+'. Recheck live scoring.'
+            }else{
+                $plan=New-CcdcFirewallPlan -Action $firewallRequest.Action -Ports $firewallRequest.Ports -RemoteAddress $firewallRequest.RemoteAddress -Protocol $firewallRequest.Protocol -Direction $firewallRequest.Direction -NetworkProfile $firewallRequest.NetworkProfile -Role $firewallRequest.Role -Profile $profile
+                if($plan.Action -eq 'Block' -and $plan.RemoteAddress -ne 'Any' -and @(Get-NetIPAddress | Where-Object IPAddress -eq $plan.RemoteAddress).Count){throw 'Refusing to block this server own address'}
+                $applied=Invoke-CcdcFirewallPlan -Plan $plan -EvidenceDirectory $fwEvidence -Approved -AcknowledgeScoringRisk
+                $firewallResult='APPLIED: '+$applied.Summary+'. Recovery: '+$applied.Evidence+'. Recheck live scoring.'
+            }
+        }catch{$firewallResult='FIREWALL ACTION FAILED: '+$_.Exception.Message}
+    }
+    if($firewallRequest -or -not(Get-Variable firewallTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $firewallTime.AddSeconds(15)){
+        try{$firewall=Get-CcdcFirewallStatus;$firewallHealth=''}catch{$firewall=$null;$firewallHealth=$_.Exception.Message}
+        $firewallTime=Get-Date
+    }
+    $history=@();if($first){$history=@(Get-CcdcHistory $data)}
+    $archive=@();if($searchArchive){$archive=@(Get-CcdcHistory -DataDirectory $data -Query $archiveQuery)}
+    $batch=Receive-CcdcBatch -DataDirectory $data -Profile $profile
+    $directRows=@();$extra=@()
+    if (-not (Get-Variable directTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $directTime.AddSeconds(5)) {
+        $includePersistence=(-not (Get-Variable persistenceTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $persistenceTime.AddSeconds(30))
+        $direct=Get-CcdcDirectState -IncludePersistence:$includePersistence
+        $directRows=@(Receive-CcdcDirectState -DataDirectory $data -Profile $profile -Snapshot $direct)
+        $directTime=Get-Date;if($includePersistence){$persistenceTime=Get-Date}
+    }
+    $baselineRows=@();$baselineHealth=@()
+    if (-not (Get-Variable registryTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $registryTime.AddMinutes(15)) {
+        $registryResult=Receive-CcdcBaselineScopes -DataDirectory $data -Profile $profile -Scopes @(Get-CcdcRegistryScopes $profile)
+        $baselineRows+=@($registryResult.Records);$registryHealth=@($registryResult.Health);$registryTime=Get-Date
+    }
+    if (-not (Get-Variable accountTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $accountTime.AddSeconds(60)) {
+        try {
+            $accountsResult=Receive-CcdcBaselineScopes -DataDirectory $data -Profile $profile -Scopes @(Get-CcdcAccountScopes)
+            $baselineRows+=@($accountsResult.Records);$accountHealth=@($accountsResult.Health)
+        } catch {$accountHealth=@('Account enumeration UNAVAILABLE/ERROR: '+$_.Exception.Message)}
+        $accountTime=Get-Date
+    }
+    $extra=@($direct.Health)+@($registryHealth)+@($accountHealth)
+    $tcpRows=@($direct.Connections | Select-Object -First 2000 | ForEach-Object {
+        [pscustomobject]@{Local=('['+$_.LocalAddress+']:'+$_.LocalPort);Remote=('['+$_.RemoteAddress+']:'+$_.RemotePort)
+            ProcessId=$_.ProcessId;Process=$_.Image;State=$_.State}
+    })
+    # Query Defender once every 30 seconds in the persistent runspace.
+    if (-not (Get-Variable defenderTime -ErrorAction SilentlyContinue) -or (Get-Date) -gt $defenderTime.AddSeconds(30)) {
+        $defenderTime=Get-Date
+        try {$defender=Get-MpComputerStatus -ErrorAction Stop | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureLastUpdated | Format-List | Out-String}
+        catch {$defender='Defender unavailable: '+$_.Exception.Message}
+    }
+    [pscustomobject]@{Records=@($history)+@($batch.Records)+@($directRows)+@($baselineRows);Health=@($batch.Health)+$extra;Tcp=$tcpRows;Defender=$defender;Archive=$archive;ArchiveSearched=$searchArchive;Firewall=$firewall;FirewallResult=$firewallResult;FirewallHealth=$firewallHealth}
+}
 $timer=New-Object System.Windows.Forms.Timer
 $timer.Interval=2000
 $timer.Add_Tick({
-    if($script:busy -or $script:paused){return}
-    $script:busy=$true
-    try{Poll-EventStreams;Poll-Tcp}finally{$script:busy=$false}
+    if ($script:pending) {
+        if (-not $script:pending.IsCompleted) { return }
+        try {
+            $result=@($worker.EndInvoke($script:pending))
+            # Expected source failures are handled and returned as health warnings.
+            # EndInvoke throws unhandled terminating errors; HadErrors also includes
+            # deliberately caught/suppressed probe errors and is not a success test.
+            $batch=$result[-1];$script:first=$false;$script:batchCount++;$script:lastHealth=@($batch.Health)
+            if ($batch.ArchiveSearched) {
+                $archiveGrid.Rows.Clear()
+                foreach($r in $batch.Archive){
+                    $i=$archiveGrid.Rows.Add([object[]]@($r.Time,$r.Severity,$r.Kind,$r.Image,$r.CommandLine,$r.SourceIp,$r.DestinationIp))
+                    $archiveGrid.Rows[$i].Tag=ConvertTo-Json -InputObject $r -Depth 8
+                }
+                $archiveButton.Enabled=$true;$archiveButton.Text='Search complete history (latest 1200 matches)'
+            }
+            if($batch.FirewallResult){$script:lastFirewallResult=$batch.FirewallResult;$fwApply.Enabled=$true;$fwUndo.Enabled=$true}
+            if($batch.Firewall){
+                $fwStatus.ForeColor=if(@($batch.Firewall.Profiles | Where-Object {-not $_.Enabled}).Count){$red}else{$fg}
+                $fwGrid.Rows.Clear()
+                foreach($rule in $batch.Firewall.Rules){$i=$fwGrid.Rows.Add([object[]]@($rule.Action,$rule.Direction,$rule.Ports,$rule.Protocol,$rule.Remote,$rule.Profile,$rule.Enabled));$fwGrid.Rows[$i].Tag=$rule.Name}
+                $fwStatus.Text=($batch.Firewall.Profiles | ForEach-Object {$_.Name+': enabled='+$_.Enabled+'; default inbound='+$_.DefaultInboundAction+'; default outbound='+$_.DefaultOutboundAction}) -join [Environment]::NewLine
+                if(@($batch.Firewall.Rules).Count -eq 0){$fwStatus.AppendText(([Environment]::NewLine+'No toolkit rules yet. Choose a service or IP/port above to review a change.'))}
+                $fwStatus.AppendText(([Environment]::NewLine+$script:lastFirewallResult+[Environment]::NewLine+'Toolkit rules shown (cap 100). Existing/GPO rules can override these. Verify remote access and live scoring.'))
+            }elseif($batch.FirewallHealth){$fwStatus.Text='Firewall status unavailable: '+$batch.FirewallHealth}
+            foreach ($r in $batch.Records) {
+                if (-not $script:seen.Add($r.Key)) { continue }
+                $script:recent.Add($r);$script:count++
+                if ($r.Severity -ne 'INFO') {$script:alertCount++}
+                if ($script:recent.Count -gt 1200) {
+                    [void]$script:seen.Remove($script:recent[0].Key);$script:recent.RemoveAt(0)
+                }
+            }
+            $script:counters.Text="Records $script:count | Flags $script:alertCount"
+            $healthBox.Text=($batch.Health -join [Environment]::NewLine)+[Environment]::NewLine+$batch.Defender
+            $script:status.Text='Monitoring processes, sockets and logs | Account names do not establish trust | Detection only'
+            $coverage.Text='Visibility available. Direct snapshots supplement Event Logs; neither proves complete coverage.';$coverage.ForeColor=[System.Drawing.Color]::LightGreen
+            if (@($batch.Health | Where-Object {$_ -match 'ERROR|UNAVAILABLE|gap|RESET|backlog|not running|not active|unavailable|not enabled'}).Count) {
+                $firstWarning=@($batch.Health | Where-Object {$_ -match 'ERROR|UNAVAILABLE|gap|RESET|backlog|not running|not active|unavailable|not enabled'})[0]
+                $coverage.Text='VISIBILITY WARNING: '+$firstWarning+' - see Health';$coverage.ForeColor=$amber
+                $script:status.Text='Coverage warning / backlog - see Health | Detection only'
+            }
+            if (-not $script:paused) {
+                Show-Recent
+                $script:tcp.Rows.Clear()
+                foreach($c in $batch.Tcp){[void]$script:tcp.Rows.Add([object[]]@($c.Local,$c.Remote,[string]$c.ProcessId,$c.Process,$c.State))}
+            }
+        } catch { $script:hadCollectionError=$true;$fwApply.Enabled=$true;$fwUndo.Enabled=$true;$script:collectionErrors.Add(($_.Exception.Message+' '+$_.ScriptStackTrace));$coverage.Text='MONITORING ERROR - investigate visibility before trusting a quiet screen';$coverage.ForeColor=$red;$script:status.Text='COLLECTION ERROR: '+$_.Exception.Message;$archiveButton.Enabled=$true }
+        $script:pending=$null
+    }
+    if ($SmokeTestReport -and ((Get-Date)-$script:smokeStart).TotalSeconds -ge 20) {
+        [pscustomobject]@{Batches=$script:batchCount;HadCollectionError=$script:hadCollectionError;Errors=$script:collectionErrors.ToArray();Events=$script:count;Health=$script:lastHealth;Status=$script:status.Text;Rows=$script:eventGrid.Rows.Count} |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $SmokeTestReport -Encoding UTF8
+        $timer.Stop()
+        $bitmap=New-Object System.Drawing.Bitmap($form.Width,$form.Height)
+        try {
+            $form.DrawToBitmap($bitmap,$form.ClientRectangle);$bitmap.Save(($SmokeTestReport+'.png'))
+            $tabIndex=0
+            foreach($tab in $tabs.TabPages){
+                $tabs.SelectedTab=$tab;$adText.DeselectAll();$healthBox.DeselectAll();$instructions.DeselectAll();$form.Refresh()
+                $form.DrawToBitmap($bitmap,$form.ClientRectangle);$bitmap.Save(($SmokeTestReport+'.tab-'+$tabIndex+'.png'));$tabIndex++
+            }
+        } finally {$bitmap.Dispose()}
+        $form.Close();return
+    }
+    $worker.Commands.Clear();$worker.Streams.Error.Clear()
+    [void]$worker.AddScript($collect.ToString(),$false).AddArgument($script:base).AddArgument($DataDirectory).AddArgument($ProfilePath).AddArgument($script:first).AddArgument($script:archiveRequested).AddArgument($archiveSearch.Text).AddArgument($script:firewallRequest)
+    $script:pending=$worker.BeginInvoke();$script:archiveRequested=$false;$script:firewallRequest=$null
 })
-$form.Add_Shown({Init-Streams;Poll-Tcp;$timer.Start()})
-$form.Add_FormClosing({$timer.Stop();$timer.Dispose()})
+$form.Add_Shown({Update-Header;$timer.Start()})
+$form.Add_FormClosing({$timer.Stop();$timer.Dispose();$worker.Stop();$worker.Dispose()})
 [void]$form.ShowDialog()

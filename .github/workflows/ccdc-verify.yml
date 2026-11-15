@@ -1,37 +1,47 @@
 name: Verify CCDC Windows Scripts
 on:
   push:
-    paths:
-      - "windows/**"
-      - ".github/workflows/ccdc-verify.yml"
+    paths: ["windows/**", ".github/workflows/ccdc-verify.yml"]
   pull_request:
-    paths:
-      - "windows/**"
-      - ".github/workflows/ccdc-verify.yml"
+    paths: ["windows/**", ".github/workflows/ccdc-verify.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   validate:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - name: Parse scripts with Windows PowerShell 5.1
+      - name: PowerShell 5.1 syntax, configuration and payload integrity
+        shell: powershell
+        run: ./windows/tests/Test-Static.ps1
+      - name: Telemetry and detection regressions
         shell: powershell
         run: |
-          $scripts = Get-ChildItem -Path windows -Filter *.ps1 -File
-          foreach ($file in $scripts) {
-            Write-Host "Parsing $($file.FullName)"
-            $tokens = $null
-            $errors = $null
-            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
-            if ($errors -and $errors.Count -gt 0) {
-              foreach ($e in $errors) { Write-Error "$($file.Name): $($e.Message) at $($e.Extent.StartLineNumber)" }
-              throw "Invalid PowerShell syntax in $($file.Name)"
-            }
-          }
-      - name: Validate Sysmon XML
+          ./windows/tests/Test-Monitoring.ps1
+          ./windows/tests/Test-DirectState.ps1
+          ./windows/tests/Test-Baselines.ps1
+          ./windows/tests/Test-Firewall.ps1
+  integration:
+    needs: validate
+    # Installer resolves an actual repository commit, not GitHub's synthetic PR merge.
+    if: github.event_name != 'pull_request'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Disposable Windows Server integration
+        shell: powershell
+        run: ./windows/tests/Test-WindowsIntegration.ps1 -Revision $env:GITHUB_SHA -AllowLabChanges -ResultsDirectory "$env:RUNNER_TEMP/ccdc-results"
+      - name: Benign CCDC behavior rehearsal
         shell: powershell
         run: |
-          [xml]$config = Get-Content windows/ccdc-sysmon.xml -Raw
-          if ($config.Sysmon.EventFiltering.NetworkConnect -eq $null) {
-            throw "Sysmon connection logging configuration missing"
-          }
-          Write-Host "Sysmon XML well-formed with NetworkConnect rules."
+          $version = (Get-Content "$env:ProgramData/CCDC-BlueTeam/current-version.txt" -Raw).Trim()
+          ./windows/tests/Test-CcdcSimulation.ps1 -AllowLabChanges -ToolkitDirectory $version -ProfilePath "$env:ProgramData/CCDC-BlueTeam/profile.json" -ResultsDirectory "$env:RUNNER_TEMP/ccdc-results/simulation"
+      - name: Preserve actual results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccdc-windows-2022-results
+          path: ${{ runner.temp }}/ccdc-results
+          retention-days: 14
